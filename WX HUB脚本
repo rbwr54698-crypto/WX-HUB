@@ -1,5 +1,6 @@
 local BS_ProtectedExecute = function(BS_protectedCode, ...)
-    if game.Close ~= game.Close then return end
+    -- 【v6修复】删掉 game.Close ~= game.Close 自杀式检测：
+    -- 部分执行器更新后每次索引返回不同代理闭包，此判断成立即无声退出（灵异事件真凶之一）
 
     local BS_envCheck = function()
         if game then return end
@@ -65,6 +66,7 @@ end
 
 return BS_ProtectedExecute(function(...)
     local function BS_probeArith()
+        if typeof(loadstring) ~= "function" then return true end -- API缺失时放行
         local BS_chunk, _ = loadstring([[
             local a = "hello"
             local b = 2
@@ -82,11 +84,16 @@ return BS_ProtectedExecute(function(...)
     end
 
     local function BS_probeFS()
+        if typeof(isfolder) ~= "function" or typeof(makefolder) ~= "function" then
+            return true -- 执行器砍掉文件API时跳过探测（灵异事件真凶之二）
+        end
         local BS_ok, _ = pcall(function()
             if not isfolder("BS_script") then makefolder("BS_script") end
             if not isfolder("BS_script/Music") then makefolder("BS_script/Music") end
         end)
-        return BS_ok and isfolder("BS_script/Music")
+        if not BS_ok then return true end
+        local okCheck, result = pcall(isfolder, "BS_script/Music")
+        return okCheck and result == true
     end
 
     local function BS_coreLogic()
@@ -103,7 +110,7 @@ local RunService = game:GetService("RunService")
 -- 缓存控制台输出函数（后面会被反检测代码置 nil，必须先留一份）
 local cachedRConsolePrint = rconsoleprint
 
-local original_request = (syn and syn.request) or (http and http.request) or request
+-- 【v6修复】删掉 original_request：它只服务于已删除的误杀检查，留着还会触发部分执行器懒加载
 local original_kick = Players.LocalPlayer and Players.LocalPlayer.Kick or nil
 
 local TAUNTS = {
@@ -187,20 +194,9 @@ local function IntegrityCheck()
         end
     end
 
-    if original_request then
-        if typeof(iscclosure) == "function" then
-            local okC, isC = pcall(iscclosure, original_request)
-            if okC and not isC then
-                return "Request 函数被篡改为 Lua Closure"
-            end
-        end
-
-        local okInfo, info = pcall(debug.getinfo, original_request)
-        if okInfo and info and info.source
-            and (info.source:match("Spy") or info.what == "Lua") then
-            return "Request 函数来源异常"
-        end
-    end
+    -- 【v6修复】删掉 request 的 iscclosure / debug.getinfo 检查：
+    -- 各大执行器自带的 request 本身就是 Lua Closure（what == "Lua"），
+    -- 这两条 100% 误杀自己（灵异事件真凶之三）
 
     return nil
 end
@@ -231,40 +227,23 @@ end
 StartProtection()
 
 -- ============================================================
---  【修复】反 hook 检测：函数缺失就跳过该项，不再自爆/自踢
+--  【v6修复】原反 hook 自检整段删除。
+--  原因：Delta/Fluxus/Solara 等执行器自己就会 hook
+--  game.HttpGet / HttpPost / tostring / setclipboard / request，
+--  执行器一更新加了 hook，这里的 isfunctionhooked 立刻判真 → shit() 自踢。
+--  之前能用、现在不能用，最大嫌疑就是它。
+--  保留对间谍产物（文件夹）的检测，但不再自踢，只记录。
 -- ============================================================
-local shit = function()
-    pcall(function() game.Players.LocalPlayer:Kick() end)
-    pcall(game.Shutdown, game)
-end
-
-if typeof(hookfunction) == "function" and typeof(isfunctionhooked) == "function"
-    and typeof(restorefunction) == "function" then
-
-    local fuck = function() return "a" end
-    pcall(hookfunction, fuck, function() return "b" end)
-    if not isfunctionhooked(fuck) then shit() return end
-
-    local bitch = game.HttpGet
-    pcall(hookfunction, bitch, function() end)
-    if not isfunctionhooked(bitch) then shit() return end
-    restorefunction(bitch)
-    if isfunctionhooked(bitch) then shit() return end
-end
-
-local cunt = request or http_request or (syn and syn.request) or (fluxus and fluxus.request)
-
 task.spawn(function()
-    while task.wait(0.5) do
-        pcall(function()
-            if typeof(isfunctionhooked) ~= "function" then return end
-            if isfunctionhooked(game.HttpGet) then shit() end
-            if isfunctionhooked(game.HttpPost) then shit() end
-            if isfunctionhooked(tostring) then shit() end
-            if isfunctionhooked(setclipboard) then shit() end
-            if cunt and isfunctionhooked(cunt) then shit() end
-            if isfolder("HttpGetFolder") or isfolder("WebhookFolder") or isfolder("RequestFolder") then shit() end
+    while task.wait(2) do
+        local found = pcall(function()
+            if typeof(isfolder) ~= "function" then return false end
+            return isfolder("HttpGetFolder") or isfolder("WebhookFolder") or isfolder("RequestFolder")
         end)
+        if found == true and cachedRConsolePrint then
+            cachedRConsolePrint("@@RED@@")
+            cachedRConsolePrint("\n[安全提示] 检测到疑似抓包产物文件夹，请留意\n")
+        end
     end
 end)
 
@@ -731,16 +710,25 @@ end)
     end
 
     local function BS_safeEntry()
-        if not BS_probeArith() then return nil, "block:arith" end
-        if not BS_probeCall()  then return nil, "block:call"  end
-        if not BS_probeFS()    then return nil, "block:fs"    end
+        -- 【v6修复】每个探测独立 pcall，任何报错不再炸穿 BindableFunction:Invoke
+        local okA, rA = pcall(BS_probeArith)
+        if not okA or not rA then return nil, "block:arith" end
+        local okC, rC = pcall(BS_probeCall)
+        if not okC or not rC then return nil, "block:call" end
+        local okF, rF = pcall(BS_probeFS)
+        if not okF or not rF then return nil, "block:fs" end
         return BS_coreLogic()
     end
 
-    local BS_success, BS_tag = BS_safeEntry()
-    if not BS_success then
-        script:ClearAllChildren()
-        script.Source = ""
+    local BS_runOk, BS_success, BS_tag = pcall(BS_safeEntry)
+    if (not BS_runOk) or (not BS_success) then
+        -- 【v6修复】loadstring 环境下 script 是 nil，原写法直接报错
+        pcall(function()
+            if typeof(script) == "Instance" then
+                script:ClearAllChildren()
+                script.Source = ""
+            end
+        end)
         return
     end
 end, ...)
