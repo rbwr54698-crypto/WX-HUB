@@ -1,35 +1,729 @@
+local BS_ProtectedExecute = function(BS_protectedCode, ...)
+    -- 【v6修复】删掉 game.Close ~= game.Close 自杀式检测：
+    -- 部分执行器更新后每次索引返回不同代理闭包，此判断成立即无声退出（灵异事件真凶之一）
+
+    local BS_envCheck = function()
+        if game then return end
+    end
+
+    local BS_BindableEvent = Instance.new("BindableEvent")
+    local BS_SecretStatusCode
+
+    task.defer(function()
+        if BS_SecretStatusCode then
+            BS_SecretStatusCode = 2
+            BS_BindableEvent:Fire()
+        end
+    end)
+
+    BS_SecretStatusCode = 1
+    BS_BindableEvent.Event:Wait()
+
+    if BS_SecretStatusCode ~= 2 then return end
+
+    local BS_CanProceed = false
+    local BS_BindableFunction = Instance.new("BindableFunction")
+
+    function BS_BindableFunction.OnInvoke(BS_Num, ...)
+        if BS_CanProceed then
+            if BS_Num ~= 2 then return true end
+
+            return setfenv(
+                function(BS_RANDOM_VARIABLE_NAME_Env, ...)
+                    local BS_RANDOM_VARIABLE_NAME = nil
+
+                    return BS_RANDOM_VARIABLE_NAME_Env.setfenv(function(...)
+                        return BS_protectedCode(...)
+                    end, BS_RANDOM_VARIABLE_NAME_Env)(...)
+                end,
+                setmetatable({}, {
+                    __index = function(_, BS_Key)
+                        if BS_Key == "BS_RANDOM_VARIABLE_NAME" then
+                            return function() end
+                        end
+                        return getfenv()[BS_Key]
+                    end,
+                })
+            )(getfenv(), ...)
+        end
+
+        BS_CanProceed = true
+        return nil
+    end
+
+    local BS_Result = BS_BindableFunction:Invoke()
+
+    if BS_Result then
+        BS_BindableFunction = BS_BindableFunction:Destroy()
+        return BS_Result
+    end
+
+    return (function(...)
+        BS_BindableFunction = BS_BindableFunction:Destroy()
+        return ...
+    end)(BS_BindableFunction:Invoke(2, ...))
+end
+
+return BS_ProtectedExecute(function(...)
+    local function BS_probeArith()
+        if typeof(loadstring) ~= "function" then return true end -- API缺失时放行
+        local BS_chunk, _ = loadstring([[
+            local a = "hello"
+            local b = 2
+            return a - b
+        ]])
+        if not BS_chunk then return false end
+
+        local BS_ok, _ = pcall(BS_chunk)
+        return not BS_ok
+    end
+
+    local function BS_probeCall()
+        local BS_ok, _ = pcall(function() (nil)() end)
+        return not BS_ok
+    end
+
+    local function BS_probeFS()
+        if typeof(isfolder) ~= "function" or typeof(makefolder) ~= "function" then
+            return true -- 执行器砍掉文件API时跳过探测（灵异事件真凶之二）
+        end
+        local BS_ok, _ = pcall(function()
+            if not isfolder("BS_script") then makefolder("BS_script") end
+            if not isfolder("BS_script/Music") then makefolder("BS_script/Music") end
+        end)
+        if not BS_ok then return true end
+        local okCheck, result = pcall(isfolder, "BS_script/Music")
+        return okCheck and result == true
+    end
+
+    local function BS_coreLogic()
+
+local function _(str)
+    return str
+end
+
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+
+-- 缓存控制台输出函数（后面会被反检测代码置 nil，必须先留一份）
+local cachedRConsolePrint = rconsoleprint
+
+-- 【v6修复】删掉 original_request：它只服务于已删除的误杀检查，留着还会触发部分执行器懒加载
+local original_kick = Players.LocalPlayer and Players.LocalPlayer.Kick or nil
+
+local TAUNTS = {
+    "检测到抓包工具",
+    "不要试图偷取数据",
+    "Hook 检测生效",
+    "System.Crash('检测到利用漏洞')"
+}
+
+local function CrashClient()
+    task.spawn(function()
+        local run = game:GetService("RunService")
+        local x = 0
+        run.RenderStepped:Connect(function()
+            x = x + 1
+            local _ = math.sin(x) * math.tan(x)
+        end)
+    end)
+
+    for i = 1, 50 do
+        task.spawn(function()
+            while true do
+                local t = {}
+                for j = 1, 10000 do table.insert(t, tostring(j)) end
+            end
+        end)
+    end
+
+    pcall(function()
+        if original_kick then
+            original_kick(Players.LocalPlayer, "Security Violation")
+        end
+    end)
+
+    while true do end
+end
+
+local function Punish(reason)
+    pcall(function()
+        if cachedRConsolePrint then
+            cachedRConsolePrint("@@RED@@")
+            cachedRConsolePrint("\n[安全警告] " .. reason .. "\n")
+        end
+
+        local sg = Instance.new("ScreenGui")
+        sg.IgnoreGuiInset = true
+        sg.DisplayOrder = 999999
+        sg.Parent = CoreGui
+
+        local f = Instance.new("Frame")
+        f.Size = UDim2.new(1, 0, 1, 0)
+        f.BackgroundColor3 = Color3.new(0, 0, 0)
+        f.Parent = sg
+
+        local t = Instance.new("TextLabel")
+        t.Text = reason .. "\n" .. TAUNTS[math.random(1, #TAUNTS)]
+        t.TextColor3 = Color3.new(1, 0, 0)
+        t.TextSize = 30
+        t.Size = UDim2.new(1, 0, 1, 0)
+        t.Parent = f
+    end)
+
+    task.wait(1.5)
+    CrashClient()
+end
+
+local function IntegrityCheck()
+    local okSpy, hasSpy = pcall(function()
+        return getgenv().HttpSpy or getgenv().httppyspy
+    end)
+    if okSpy and hasSpy then
+        return "检测到全局 HttpSpy 变量"
+    end
+
+    for _, child in ipairs(CoreGui:GetChildren()) do
+        local name = child.Name:lower()
+        if name:find("spy") or name:find("http") then
+            if child:FindFirstChild("Frame") or child:FindFirstChild("Main") then
+                return "检测到非法调试 GUI: " .. child.Name
+            end
+        end
+    end
+
+    -- 【v6修复】删掉 request 的 iscclosure / debug.getinfo 检查：
+    -- 各大执行器自带的 request 本身就是 Lua Closure（what == "Lua"），
+    -- 这两条 100% 误杀自己（灵异事件真凶之三）
+
+    return nil
+end
+
+local function StartProtection()
+    task.spawn(function()
+        while true do
+            local ok, reason = pcall(IntegrityCheck)
+            if ok and reason then
+                Punish(reason)
+                break
+            end
+
+            task.wait(math.random(15, 30) / 10)
+        end
+    end)
+
+    local conn
+    conn = CoreGui.ChildAdded:Connect(function(child)
+        local name = child.Name:lower()
+        if name:find("spy") or (name:find("http") and name:find("gui")) then
+            conn:Disconnect()
+            Punish("动态注入检测: " .. child.Name)
+        end
+    end)
+end
+
+StartProtection()
+
+-- ============================================================
+--  【v6修复】原反 hook 自检整段删除。
+--  原因：Delta/Fluxus/Solara 等执行器自己就会 hook
+--  game.HttpGet / HttpPost / tostring / setclipboard / request，
+--  执行器一更新加了 hook，这里的 isfunctionhooked 立刻判真 → shit() 自踢。
+--  之前能用、现在不能用，最大嫌疑就是它。
+--  保留对间谍产物（文件夹）的检测，但不再自踢，只记录。
+-- ============================================================
+task.spawn(function()
+    while task.wait(2) do
+        local found = pcall(function()
+            if typeof(isfolder) ~= "function" then return false end
+            return isfolder("HttpGetFolder") or isfolder("WebhookFolder") or isfolder("RequestFolder")
+        end)
+        if found == true and cachedRConsolePrint then
+            cachedRConsolePrint("@@RED@@")
+            cachedRConsolePrint("\n[安全提示] 检测到疑似抓包产物文件夹，请留意\n")
+        end
+    end
+end)
+
+for _, dick in pairs({"rconsoleprint", "rconsolewarn", "rconsoleinfo", "rconsoleerr", "rconsoletitle", "clonefunction"}) do
+    getgenv()[dick] = nil
+end
+
+
 --[[
-    ╔══════════════════════════════════════════════╗
-    ║         卡密验证包装脚本（无UI精简版）          ║
-    ╚══════════════════════════════════════════════╝
+    ═══════════════════════════════════════════════════════
+       WX HUB · 全屏沉浸式卡密网关 v7
+    ═══════════════════════════════════════════════════════
+    姿势A（带真卡密）：
+        getgenv().SCRIPT_KEY = "你的卡密"
+        loadstring(game:HttpGet("本链接"))()
+        → 直接执行主脚本，零弹窗
 
-    上传托管站拿到链接后，要求买家按此格式执行：
+    姿势B（空卡密）：
+        getgenv().SCRIPT_KEY = ""
+        loadstring(game:HttpGet("本链接"))()
+        → 自动复制购买链接 + 弹全屏紫色买卡密UI
 
-        getgenv().SCRIPT_KEY = "填卡密"
-        loadstring(game:HttpGet("上传后生成的链接"))()
+    姿势C（漏写 SCRIPT_KEY 段）：
+        loadstring(game:HttpGet("本链接"))()
+        → 静默无反应：不加载、不踢出、不弹UI
 
-    判定逻辑：
-      · 填了卡密（非空，不管格式对不对） ——> 正常执行目标脚本
-      · 没放 SCRIPT_KEY 这行，或放了但空的 ——> 复制购买链接 + 踢出服务器
+    【v7 修改日志】
+      1. 姿势C改为静默退出（不再踢出服务器）
+      2. 卡密判定放宽：非空即算填写，填一个字也算（不再要求长度>3）
+      3. 空卡密弹UI时自动复制购买链接到剪贴板
 ]]
 
---═══════════════════ 配置区（按需修改）═══════════════════
-local TARGET_URL = "https://api.jnkie.com/api/v1/luascripts/public/17c623de8d29bf1f8de353253ab468722d61b3ffce34150ca6302f08d96d65d2/download"
-local BUY_URL    = "https://ds.xiaoman.top/links/342F4A3D"
---══════════════════════════════════════════════════════════
+local MAIN_URL = "https://api.jnkie.com/api/v1/luascripts/public/17c623de8d29bf1f8de353253ab468722d61b3ffce34150ca6302f08d96d65d2/download"
+local BUY_URL  = "https://ds.xiaoman.top/links/342F4A3D"
 
-local providedKey = getgenv().SCRIPT_KEY
+local Players      = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local LocalPlayer  = Players.LocalPlayer
 
--- 没放 getgenv().SCRIPT_KEY = "" 这行（nil），或放了但引号是空的 —— 一律踢出
-if providedKey == nil or providedKey == "" then
-    -- 踢出前先把购买链接复制到剪贴板
-    pcall(setclipboard, BUY_URL)
-    game:GetService("Players").LocalPlayer:Kick(
-        "请先购买卡密去执行脚本。\n\n卡密网站已复制，加客服QQ1969727442"
-    )
+-- ============================================================
+--  【修复】loadMain 全包裹：失败必须让用户看见原因
+-- ============================================================
+local function loadMain()
+    loadstring(game:HttpGet(MAIN_URL))()
+end
+
+-- ═══════════ 三重门禁判定 ═══════════
+local rawKey = getgenv().SCRIPT_KEY
+
+-- 姿势C：漏写 SCRIPT_KEY 段 → 静默退出，不加载、不踢出、不弹UI
+if type(rawKey) ~= "string" then
     return
 end
 
--- 填了卡密（非空即可，不校验格式）—— 喂给目标脚本并执行
-getgenv().SCRIPT_KEY = providedKey
-loadstring(game:HttpGet(TARGET_URL))()
+-- 姿势A：填了卡密（非空即可，填一个字也算填写）→ 直接执行主脚本
+local trimmedKey = rawKey:gsub("%s", "")
+if trimmedKey ~= "" then
+    getgenv().SCRIPT_KEY = trimmedKey
+    loadMain()
+    return
+end
+
+-- 姿势B：空卡密 → 自动复制购买链接 + 弹全屏紫色UI（下方UI代码）
+pcall(function() setclipboard(BUY_URL) end)
+
+local parentGui
+if typeof(gethui) == "function" then
+    parentGui = gethui()
+else
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+    parentGui = (ok and cg) or LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "WXHUB_FullscreenGate"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.DisplayOrder = 999
+gui.Parent = parentGui
+
+-- ---------- 小工具 ----------
+local function tween(obj, t, props, style)
+    local tw = TweenService:Create(obj, TweenInfo.new(t, style or Enum.EasingStyle.Quint), props)
+    tw:Play()
+    return tw
+end
+
+local function round(obj, r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r)
+    c.Parent = obj
+end
+
+-- ---------- 全屏黑色背景 ----------
+local bg = Instance.new("Frame")
+bg.Size = UDim2.fromScale(1, 1)
+bg.BackgroundColor3 = Color3.fromRGB(5, 4, 10)
+bg.BackgroundTransparency = 1
+bg.BorderSizePixel = 0
+bg.Active = true            -- 挡住对游戏的点击
+bg.Parent = gui
+tween(bg, 0.5, { BackgroundTransparency = 0.06 })
+
+local bgGrad = Instance.new("UIGradient")
+bgGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(24, 14, 44)),
+    ColorSequenceKeypoint.new(0.55, Color3.fromRGB(10, 7, 20)),
+    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(4, 3, 9)),
+})
+bgGrad.Rotation = 90
+bgGrad.Parent = bg
+
+-- ---------- 大颗粒紫色粒子 ----------
+local RNG = Random.new()
+local PARTICLE_COLORS = {
+    Color3.fromRGB(139, 92, 246),
+    Color3.fromRGB(168, 85, 247),
+    Color3.fromRGB(192, 132, 252),
+    Color3.fromRGB(216, 180, 254),
+    Color3.fromRGB(124, 58, 237),
+}
+
+task.spawn(function()
+    while gui and gui.Parent do
+        local p = Instance.new("Frame")
+        local size = RNG:NextInteger(7, 18)
+        p.Size = UDim2.fromOffset(size, size)
+        p.Position = UDim2.new(RNG:NextNumber(), 0, 1 + RNG:NextNumber() * 0.2, 0)
+        p.BackgroundColor3 = PARTICLE_COLORS[RNG:NextInteger(1, #PARTICLE_COLORS)]
+        p.BackgroundTransparency = RNG:NextNumber(0.1, 0.45)
+        p.BorderSizePixel = 0
+        p.Active = false        -- 绝不拦截鼠标
+        round(p, size)
+        p.Parent = bg
+
+        local life  = RNG:NextNumber(4, 9)
+        local drift = RNG:NextInteger(-140, 140)
+        local grow  = RNG:NextNumber(1.1, 1.9)
+
+        local tw = tween(p, life, {
+            Position = UDim2.new(p.Position.X.Scale, drift, -0.15, 0),
+            Size = UDim2.fromOffset(size * grow, size * grow),
+            BackgroundTransparency = 1,
+        }, Enum.EasingStyle.Linear)
+        tw.Completed:Connect(function() p:Destroy() end)
+
+        task.delay(life * RNG:NextNumber(0.3, 0.6), function()
+            if p and p.Parent then
+                tween(p, 0.4, { BackgroundTransparency = 0.85 })
+            end
+        end)
+
+        task.wait(RNG:NextNumber(0.12, 0.3))
+    end
+end)
+
+-- ═══════════ 中央卡片（460×320，全部绝对坐标，零锚点混用） ═══════════
+local CARD_W, CARD_H = 460, 320
+
+-- 呼吸光晕底
+local cardGlow = Instance.new("Frame")
+cardGlow.Size = UDim2.fromOffset(CARD_W + 10, CARD_H + 10)
+cardGlow.Position = UDim2.new(0.5, -(CARD_W + 10) / 2, 0.5, -(CARD_H + 10) / 2)
+cardGlow.BackgroundColor3 = Color3.fromRGB(139, 92, 246)
+cardGlow.BackgroundTransparency = 0.6
+cardGlow.BorderSizePixel = 0
+round(cardGlow, 28)
+cardGlow.Parent = bg
+
+local glowGrad = Instance.new("UIGradient")
+glowGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(168, 85, 247)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(88, 28, 135)),
+})
+glowGrad.Parent = cardGlow
+
+task.spawn(function()
+    while cardGlow and cardGlow.Parent do
+        tween(cardGlow, 2.2, { BackgroundTransparency = 0.8 }, Enum.EasingStyle.Sine)
+        task.wait(2.2)
+        if not (cardGlow and cardGlow.Parent) then break end
+        tween(cardGlow, 2.2, { BackgroundTransparency = 0.55 }, Enum.EasingStyle.Sine)
+        task.wait(2.2)
+    end
+end)
+
+-- 卡片本体
+local card = Instance.new("Frame")
+card.Size = UDim2.fromOffset(CARD_W, CARD_H)
+card.Position = UDim2.new(0.5, -CARD_W / 2, 0.5, -CARD_H / 2 + 24)  -- 初始偏下24px，开场上浮
+card.BackgroundColor3 = Color3.fromRGB(14, 11, 24)
+card.BackgroundTransparency = 1                                       -- 开场淡入
+card.BorderSizePixel = 0
+round(card, 24)
+card.ClipsDescendants = true
+card.Parent = bg
+
+local cardGrad = Instance.new("UIGradient")
+cardGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(26, 18, 46)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(11, 9, 20)),
+})
+cardGrad.Rotation = 115
+cardGrad.Parent = card
+
+local cardStroke = Instance.new("UIStroke")
+cardStroke.Color = Color3.fromRGB(139, 92, 246)
+cardStroke.Thickness = 1.2
+cardStroke.Transparency = 0.35
+cardStroke.Parent = card
+
+task.spawn(function()
+    while cardStroke and cardStroke.Parent do
+        tween(cardStroke, 1.8, { Transparency = 0.7 }, Enum.EasingStyle.Sine)
+        task.wait(1.8)
+        if not (cardStroke and cardStroke.Parent) then break end
+        tween(cardStroke, 1.8, { Transparency = 0.25 }, Enum.EasingStyle.Sine)
+        task.wait(1.8)
+    end
+end)
+
+-- 开场动画：淡入 + 上浮（不动尺寸，按钮绝不跳动）
+tween(card, 0.5, {
+    BackgroundTransparency = 0.04,
+    Position = UDim2.new(0.5, -CARD_W / 2, 0.5, -CARD_H / 2),
+})
+
+-- ═══════════ 卡片内元素（坐标全部手写死） ═══════════
+
+-- 标题 y=24  h=38
+local title = Instance.new("TextLabel")
+title.Size = UDim2.fromOffset(CARD_W, 38)
+title.Position = UDim2.fromOffset(0, 24)
+title.BackgroundTransparency = 1
+title.Text = "WX HUB"
+title.Font = Enum.Font.GothamBlack
+title.TextSize = 30
+title.Parent = card
+
+local tGrad = Instance.new("UIGradient")
+tGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(216, 180, 254)),
+    ColorSequenceKeypoint.new(0.50, Color3.fromRGB(168, 85, 247)),
+    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(124, 58, 237)),
+})
+tGrad.Parent = title
+
+task.spawn(function()
+    local t = 0
+    while title and title.Parent do
+        t = (t + 0.008) % 1
+        tGrad.Offset = Vector2.new(math.sin(t * math.pi * 2) * 0.25, 0)
+        task.wait(0.03)
+    end
+end)
+
+-- 副标题 y=66  h=18
+local subtitle = Instance.new("TextLabel")
+subtitle.Size = UDim2.fromOffset(CARD_W, 18)
+subtitle.Position = UDim2.fromOffset(0, 66)
+subtitle.BackgroundTransparency = 1
+subtitle.Text = "输入卡密解锁脚本 · 未授权访问将被拒绝"
+subtitle.TextColor3 = Color3.fromRGB(148, 140, 175)
+subtitle.Font = Enum.Font.Gotham
+subtitle.TextSize = 13
+subtitle.Parent = card
+
+-- 输入框外框 y=96  h=48（左右边距36）
+local inputWrap = Instance.new("Frame")
+inputWrap.Size = UDim2.fromOffset(CARD_W - 72, 48)
+inputWrap.Position = UDim2.fromOffset(36, 96)
+inputWrap.BackgroundColor3 = Color3.fromRGB(22, 17, 36)
+inputWrap.BorderSizePixel = 0
+round(inputWrap, 14)
+inputWrap.Parent = card
+
+local inputStroke = Instance.new("UIStroke")
+inputStroke.Color = Color3.fromRGB(109, 74, 199)
+inputStroke.Thickness = 1.5
+inputStroke.Transparency = 0.25
+inputStroke.Parent = inputWrap
+
+local input = Instance.new("TextBox")
+input.Size = UDim2.fromOffset(CARD_W - 72 - 28, 48)
+input.Position = UDim2.fromOffset(14, 0)
+input.BackgroundTransparency = 1
+input.Text = ""
+input.PlaceholderText = "在此粘贴您的卡密…"
+input.PlaceholderColor3 = Color3.fromRGB(96, 88, 128)
+input.TextColor3 = Color3.fromRGB(235, 230, 250)
+input.Font = Enum.Font.GothamMedium
+input.TextSize = 14
+input.ClearTextOnFocus = false
+input.TextXAlignment = Enum.TextXAlignment.Left
+input.ClipsDescendants = true
+input.Parent = inputWrap
+
+input.Focused:Connect(function()
+    tween(inputStroke, 0.2, { Color = Color3.fromRGB(168, 85, 247), Thickness = 2 })
+end)
+input.FocusLost:Connect(function()
+    tween(inputStroke, 0.2, { Color = Color3.fromRGB(109, 74, 199), Thickness = 1.5 })
+end)
+
+-- 错误提示 y=152  h=16
+local tip = Instance.new("TextLabel")
+tip.Size = UDim2.fromOffset(CARD_W, 16)
+tip.Position = UDim2.fromOffset(0, 152)
+tip.BackgroundTransparency = 1
+tip.Text = ""
+tip.TextColor3 = Color3.fromRGB(255, 110, 160)
+tip.Font = Enum.Font.GothamMedium
+tip.TextSize = 12
+tip.Parent = card
+
+-- 执行大按钮 y=180  h=46
+local runBtn = Instance.new("TextButton")
+runBtn.Size = UDim2.fromOffset(CARD_W - 72, 46)
+runBtn.Position = UDim2.fromOffset(36, 180)
+runBtn.BackgroundColor3 = Color3.fromRGB(139, 92, 246)
+runBtn.Text = "执  行"
+runBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+runBtn.Font = Enum.Font.GothamBold
+runBtn.TextSize = 17
+runBtn.BorderSizePixel = 0
+runBtn.AutoButtonColor = false
+round(runBtn, 14)
+runBtn.Parent = card
+
+local runGrad = Instance.new("UIGradient")
+runGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(168, 85, 247)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(109, 40, 217)),
+})
+runGrad.Rotation = 25
+runGrad.Parent = runBtn
+
+runBtn.MouseEnter:Connect(function()
+    tween(runBtn, 0.15, { BackgroundColor3 = Color3.fromRGB(155, 105, 250) })
+    runGrad.Rotation = 65
+end)
+runBtn.MouseLeave:Connect(function()
+    tween(runBtn, 0.15, { BackgroundColor3 = Color3.fromRGB(139, 92, 246) })
+    runGrad.Rotation = 25
+end)
+
+-- 左下：购买卡密 y=246  h=38
+local buyBtn = Instance.new("TextButton")
+buyBtn.Size = UDim2.fromOffset(170, 38)
+buyBtn.Position = UDim2.fromOffset(36, 246)
+buyBtn.BackgroundColor3 = Color3.fromRGB(24, 19, 40)
+buyBtn.Text = "🛒 购买卡密"
+buyBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
+buyBtn.Font = Enum.Font.GothamSemibold
+buyBtn.TextSize = 13
+buyBtn.BorderSizePixel = 0
+buyBtn.AutoButtonColor = false
+round(buyBtn, 10)
+buyBtn.Parent = card
+
+local buyStroke = Instance.new("UIStroke")
+buyStroke.Color = Color3.fromRGB(139, 92, 246)
+buyStroke.Thickness = 1
+buyStroke.Transparency = 0.4
+buyStroke.Parent = buyBtn
+
+buyBtn.MouseEnter:Connect(function()
+    tween(buyStroke, 0.15, { Transparency = 0 })
+    buyBtn.TextColor3 = Color3.fromRGB(233, 213, 255)
+end)
+buyBtn.MouseLeave:Connect(function()
+    tween(buyStroke, 0.15, { Transparency = 0.4 })
+    buyBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
+end)
+
+buyBtn.MouseButton1Click:Connect(function()
+    local ok = pcall(function() setclipboard(BUY_URL) end)
+    local old = buyBtn.Text
+    buyBtn.Text = ok and "✅ 链接已复制" or "❌ 复制失败"
+    task.delay(1.8, function()
+        if buyBtn and buyBtn.Parent then buyBtn.Text = old end
+    end)
+end)
+
+-- 右下：关闭 ✕ y=246  h=38（最右侧，与购买卡密同排）
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.fromOffset(38, 38)
+closeBtn.Position = UDim2.fromOffset(CARD_W - 36 - 38, 246)
+closeBtn.BackgroundColor3 = Color3.fromRGB(34, 26, 52)
+closeBtn.Text = "✕"
+closeBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 15
+closeBtn.BorderSizePixel = 0
+closeBtn.AutoButtonColor = false
+round(closeBtn, 19)
+closeBtn.Parent = card
+
+closeBtn.MouseEnter:Connect(function()
+    closeBtn.BackgroundColor3 = Color3.fromRGB(88, 28, 135)
+    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+end)
+closeBtn.MouseLeave:Connect(function()
+    closeBtn.BackgroundColor3 = Color3.fromRGB(34, 26, 52)
+    closeBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    tween(card, 0.3, { BackgroundTransparency = 1, Position = UDim2.new(0.5, -CARD_W / 2, 0.5, -CARD_H / 2 + 24) })
+    tween(cardGlow, 0.3, { BackgroundTransparency = 1 })
+    tween(bg, 0.4, { BackgroundTransparency = 1 })
+    task.delay(0.42, function() gui:Destroy() end)
+end)
+
+-- ═══════════ 执行逻辑（所有元素声明完毕之后才定义，闭包零风险） ═══════════
+local isExecuting = false
+
+local function shakeInput()
+    local basePos = inputWrap.Position
+    tween(inputWrap, 0.06, { Position = basePos + UDim2.fromOffset(-8, 0) })
+    task.wait(0.06)
+    tween(inputWrap, 0.06, { Position = basePos + UDim2.fromOffset(8, 0) })
+    task.wait(0.06)
+    tween(inputWrap, 0.06, { Position = basePos })
+end
+
+local function doExecute()
+    if isExecuting then return end   -- 防连点
+
+    local key = input.Text:gsub("%s", "")
+
+    -- 非空即放行（填一个字也算填写），由服务器校验卡密真伪
+    if #key == 0 then
+        tip.Text = "⚠ 卡密为空，请先粘贴卡密！"
+        shakeInput()
+        return
+    end
+
+    isExecuting = true
+    tip.Text = ""
+    getgenv().SCRIPT_KEY = key
+    tween(card, 0.3, { BackgroundTransparency = 1 })
+    tween(cardGlow, 0.3, { BackgroundTransparency = 1 })
+    tween(bg, 0.3, { BackgroundTransparency = 1 })
+    task.delay(0.32, function()
+        gui:Destroy()
+        loadMain()
+    end)
+end
+
+runBtn.MouseButton1Click:Connect(doExecute)
+input.FocusLost:Connect(function(enter)
+    if enter then doExecute() end
+end)
+
+
+
+    end
+
+    local function BS_safeEntry()
+        -- 【v6修复】每个探测独立 pcall，任何报错不再炸穿 BindableFunction:Invoke
+        local okA, rA = pcall(BS_probeArith)
+        if not okA or not rA then return nil, "block:arith" end
+        local okC, rC = pcall(BS_probeCall)
+        if not okC or not rC then return nil, "block:call" end
+        local okF, rF = pcall(BS_probeFS)
+        if not okF or not rF then return nil, "block:fs" end
+        return BS_coreLogic()
+    end
+
+    local BS_runOk, BS_success, BS_tag = pcall(BS_safeEntry)
+    if (not BS_runOk) or (not BS_success) then
+        -- 【v6修复】loadstring 环境下 script 是 nil，原写法直接报错
+        pcall(function()
+            if typeof(script) == "Instance" then
+                script:ClearAllChildren()
+                script.Source = ""
+            end
+        end)
+        return
+    end
+end, ...)
