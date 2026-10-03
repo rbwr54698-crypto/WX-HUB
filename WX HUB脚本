@@ -292,8 +292,8 @@ end
         → 直接踢出服务器：请使用正确的执行链接
 
     【v5 修复日志】
-      1. loadMain 加 pcall 保护，失败时控制台红色报错 + 屏幕错误提示，
-         不再"点了执行没反应"
+      1. loadMain 保持直连，主脚本本就卡慢，失败自行重试即可
+         （按用户要求：已移除加载失败错误提示屏）
       2. UI 路径与链接路径卡密判定统一：去空格后长度 > 3 即放行，
          交给服务器校验，不再卡死 UUID 正则
       3. 反 hook 检测函数缺失时跳过而不是自爆/自踢
@@ -311,61 +311,8 @@ local LocalPlayer  = Players.LocalPlayer
 -- ============================================================
 --  【修复】loadMain 全包裹：失败必须让用户看见原因
 -- ============================================================
-local function showFatalError(errMsg)
-    pcall(function()
-        if cachedRConsolePrint then
-            cachedRConsolePrint("@@RED@@")
-            cachedRConsolePrint("\n[WX HUB] 主脚本加载失败: " .. tostring(errMsg) .. "\n")
-            cachedRConsolePrint("@@WHITE@@")
-        end
-    end)
-
-    local parentGui
-    if typeof(gethui) == "function" then
-        parentGui = gethui()
-    else
-        local ok, cg = pcall(function() return game:GetService("CoreGui") end)
-        parentGui = (ok and cg) or LocalPlayer:WaitForChild("PlayerGui")
-    end
-
-    local errGui = Instance.new("ScreenGui")
-    errGui.Name = "WXHUB_LoadError"
-    errGui.ResetOnSpawn = false
-    errGui.IgnoreGuiInset = true
-    errGui.DisplayOrder = 999999
-    errGui.Parent = parentGui
-
-    local f = Instance.new("Frame")
-    f.Size = UDim2.fromScale(1, 1)
-    f.BackgroundColor3 = Color3.fromRGB(10, 5, 5)
-    f.BackgroundTransparency = 0.1
-    f.BorderSizePixel = 0
-    f.Parent = errGui
-
-    local t = Instance.new("TextLabel")
-    t.Size = UDim2.fromScale(1, 1)
-    t.BackgroundTransparency = 1
-    t.TextColor3 = Color3.fromRGB(255, 90, 90)
-    t.Font = Enum.Font.GothamBold
-    t.TextSize = 18
-    t.TextWrapped = true
-    t.Text = "WX HUB 主脚本加载失败\n\n" .. tostring(errMsg)
-        .. "\n\n请检查网络后重新执行链接"
-    t.Parent = f
-end
-
 local function loadMain()
-    local ok, err = pcall(function()
-        local src = game:HttpGet(MAIN_URL)
-        local chunk = loadstring(src)
-        if not chunk then
-            error("loadstring 返回 nil：主脚本内容为空或下载被拦截", 0)
-        end
-        chunk()
-    end)
-    if not ok then
-        showFatalError(err)
-    end
+    loadstring(game:HttpGet(MAIN_URL))()
 end
 
 -- ═══════════ 三重门禁判定 ═══════════
