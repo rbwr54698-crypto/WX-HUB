@@ -1,490 +1,569 @@
 -- ============================================================
---   WX HUB · 外部执行链接加载器 v9（2026-10-03 检测加固版）
+--   WX HUB · 外部执行链接加载器 v10（2026-10-03 永不静默版）
 -- ------------------------------------------------------------
---  三种姿势：
---   A) getgenv().SCRIPT_KEY = "2a20c53b-35f6-4328-8089-6075efe3a688"
---      → 卡密清洗空白后写入全局 → 直接加载主脚本，零弹窗
---   B) getgenv().SCRIPT_KEY = ""
---      → 弹出全屏紫色 UI：纯黑背景铺满全屏 + 紫色上升粒子
---        + 中央卡片卡密输入框（占位符即 X 符号卡密格式）
---   C) 执行链接里没有写 SCRIPT_KEY 这一行
---      → 直接踢出服务器，理由：你没有使用正确的执行链接
---
---  本文件为纯 Luau 平铺结构：无 setfenv 外壳 / 无反 Hook 自踢 /
---  无环境探测，任意 Luau 混淆器（MoonSec V3、Prometheus 等）可直接混淆，
---  混淆后不会与执行器打架。中文 UI 文案请确保混淆器支持 UTF-8。
+--  v10 相对 v9 的教训总结：
+--   1. 【哨兵自检】源码级检测前先看本脚本是否明文，被混淆则自动降级
+--      为"按全局值判定"，杜绝 v9 在某些执行器/混淆产物上直接死机的风险
+--   2. 【永不静默】全程 print 留痕 + 外层 xpcall 兜底：任何内部错误
+--      都会在控制台打印堆栈，并在屏幕上弹红字报错画面
+--   3. 【kick 加固】有界等待 LocalPlayer（修复 v9 可能死等 PlayerAdded
+--      的隐患），连踢 3 次，踢不动就原地封锁
+--   判定优先级：
+--     确凿没写 SCRIPT_KEY 行（源码检测可用时）→ 踢
+--     全局无值 → 踢
+--     有效卡密 → 直接执行主脚本
+--     其余（空串/空白/太短/非字符串）→ 弹紫色买卡 UI
 -- ============================================================
 
-local MAIN_URL = "https://api.jnkie.com/api/v1/luascripts/public/17c623de8d29bf1f8de353253ab468722d61b3ffce34150ca6302f08d96d65d2/download"
-local BUY_URL  = "https://ds.xiaoman.top/links/342F4A3D"
+print("[WXHUB v10] 加载器入口已触发（看到本行 = 文件已更新成功）")
 
-local Players      = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local LocalPlayer  = Players.LocalPlayer
-
--- ============================================================
---  【修复】loadMain 全包裹：失败必须让用户看见原因
--- ============================================================
-local function loadMain()
-    loadstring(game:HttpGet(MAIN_URL))()
-end
-
--- ═══════════ 三重门禁判定（v9 加固：调用方源码级检测） ═══════════
--- 【病根】getgenv() 是整个注入会话共享的全局变量，旧版只读它的值，
--- 导致"残留卡密污染判定"：
---   现象1：先跑姿势B（SCRIPT_KEY 被写成 ""）→ 同会话再跑姿势C（链接里
---         根本没写 SCRIPT_KEY 行）→ 读到上次的残留空串 → 不踢，反而弹 UI。
---   现象2：先跑姿势A（写了真卡密）→ 同会话再跑姿势C → 读到残留卡密
---         → 不踢，直接执行主脚本。
--- 【治法】不再只信全局的值，而是直接检查"本次调用方"的源码里有没有写
--- SCRIPT_KEY 这一行——没写就无条件踢出，全局里残留什么都不管。
--- 注意： SCRIPT_KEY 那行必须写在 loadstring 调用之前（本来就该这么写）。
-
-local function kickPlayer(reason)
-    local lp = LocalPlayer
-    if not lp then
-        pcall(function() lp = Players.PlayerAdded:Wait() end)
-    end
-    if lp then
-        pcall(function() lp:Kick(reason) end)
-    end
-end
-
--- 遍历调用栈，跳过本脚本自己的 chunk，找到第一个外部调用方，
--- 检查其源码中是否出现 script_key（大小写不敏感）。
--- 拿不到源码时返回 true，回退为"信任旧判定"，保证绝不误踢。
-local function callerHasKeyLine()
-    local mySrc = nil
-    for level = 1, 8 do
-        local ok, info = pcall(debug.getinfo, level, "S")
-        if not ok or type(info) ~= "table" or type(info.source) ~= "string" then
-            return true
+local function WXHUB_fatalError(msg)
+    print("[WXHUB v10] 内部错误 ->", msg)
+    pcall(function()
+        local pg = nil
+        if typeof(gethui) == "function" then
+            local ok, r = pcall(gethui)
+            if ok then pg = r end
         end
-        if mySrc == nil then
-            mySrc = info.source
-        elseif info.source ~= mySrc then
-            return info.source:lower():find("script_key", 1, true) ~= nil
+        if not pg then
+            local ok2, cg = pcall(function() return game:GetService("CoreGui") end)
+            if ok2 then pg = cg end
         end
+        if not pg then
+            local lp = game:GetService("Players").LocalPlayer
+            if lp then pg = lp:FindFirstChildOfClass("PlayerGui") end
+        end
+        if not pg then return end
+        local sg = Instance.new("ScreenGui")
+        sg.Name = "WXHUB_FatalError"
+        sg.ResetOnSpawn = false
+        sg.IgnoreGuiInset = true
+        sg.DisplayOrder = 999999
+        sg.Parent = pg
+        local f = Instance.new("Frame")
+        f.Size = UDim2.fromScale(1, 1)
+        f.BackgroundColor3 = Color3.new(0, 0, 0)
+        f.BackgroundTransparency = 0.1
+        f.Parent = sg
+        local tl = Instance.new("TextLabel")
+        tl.Size = UDim2.fromScale(1, 1)
+        tl.BackgroundTransparency = 1
+        tl.TextColor3 = Color3.fromRGB(255, 90, 90)
+        tl.Font = Enum.Font.GothamBold
+        tl.TextSize = 18
+        tl.TextWrapped = true
+        tl.Text = "WX HUB 加载器发生内部错误\n\n" .. tostring(msg):sub(1, 600) .. "\n\n请截图此画面联系作者"
+        tl.Parent = f
+    end)
+end
+
+local function WXHUB_MAIN()
+    local MAIN_URL = "https://api.jnkie.com/api/v1/luascripts/public/17c623de8d29bf1f8de353253ab468722d61b3ffce34150ca6302f08d96d65d2/download"
+    local BUY_URL  = "https://ds.xiaoman.top/links/342F4A3D"
+
+    local Players      = game:GetService("Players")
+    local TweenService = game:GetService("TweenService")
+    local LocalPlayer  = Players.LocalPlayer
+
+    -- ============================================================
+    --  【修复】loadMain 全包裹：失败必须让用户看见原因
+    -- ============================================================
+    local function loadMain()
+        loadstring(game:HttpGet(MAIN_URL))()
     end
-    return true
-end
 
-local keyLinePresent = callerHasKeyLine()
-local rawKey = getgenv().SCRIPT_KEY
+    -- ═══════════ 三重门禁判定（v10：哨兵自检 + 分级检测 + 全程留痕） ═══════════
+    -- 设计原则：检测可以降级，功能绝不陪葬。
+    --   源码可读（明文上传）+ debug 可用 → 源码级检测：
+    --     查"本次调用方"源码里有没有写 SCRIPT_KEY 行，
+    --     没写就踢，全局残留旧值一律无视（根治 v8 的串味 bug）。
+    --   源码不可读（被混淆成密文）或无 debug → 自动降级为按全局值判定，
+    --     保证加载器在任何环境下都能干活。
+    -- 全程 print 留痕；外层 xpcall 兜底：任何内部错误直接红字上屏，绝不静默。
 
--- 姿势C：调用方链接里没写 SCRIPT_KEY 行（或写了 nil）→ 无条件踢出
-if (not keyLinePresent) or rawKey == nil then
-    kickPlayer("你没有使用正确的执行链接")
-    return
-end
+    local CANARY = "WXHUB_V10_CANARY_9F3A" -- 明文哨兵：混淆后消失 = 源码检测不可信
 
--- 姿势A：字符串卡密且去空格后长度 > 3 → 写回全局 → 直接执行主脚本
-if type(rawKey) == "string" then
-    local key = rawKey:gsub("%s", "")
-    if #key > 3 then
-        getgenv().SCRIPT_KEY = key
-        loadMain()
-        return
-    end
-end
-
--- 姿势B：写了 SCRIPT_KEY 但内容为空/纯空白/太短/非字符串 → 弹买卡 UI
-
--- ═══════════ 姿势B：全屏紫色UI ═══════════
-
-local parentGui
-if typeof(gethui) == "function" then
-    parentGui = gethui()
-else
-    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
-    parentGui = (ok and cg) or LocalPlayer:WaitForChild("PlayerGui")
-end
-
-local gui = Instance.new("ScreenGui")
-gui.Name = "WXHUB_FullscreenGate"
-gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
-gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui.DisplayOrder = 999
-gui.Parent = parentGui
-
--- ---------- 小工具 ----------
-local function tween(obj, t, props, style)
-    local tw = TweenService:Create(obj, TweenInfo.new(t, style or Enum.EasingStyle.Quint), props)
-    tw:Play()
-    return tw
-end
-
-local function round(obj, r)
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, r)
-    c.Parent = obj
-end
-
--- ---------- 全屏黑色背景 ----------
-local bg = Instance.new("Frame")
-bg.Size = UDim2.fromScale(1, 1)
-bg.BackgroundColor3 = Color3.fromRGB(5, 4, 10)
-bg.BackgroundTransparency = 1
-bg.BorderSizePixel = 0
-bg.Active = true            -- 挡住对游戏的点击
-bg.Parent = gui
-tween(bg, 0.5, { BackgroundTransparency = 0.06 })
-
-local bgGrad = Instance.new("UIGradient")
-bgGrad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(24, 14, 44)),
-    ColorSequenceKeypoint.new(0.55, Color3.fromRGB(10, 7, 20)),
-    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(4, 3, 9)),
-})
-bgGrad.Rotation = 90
-bgGrad.Parent = bg
-
--- ---------- 大颗粒紫色粒子 ----------
-local RNG = Random.new()
-local PARTICLE_COLORS = {
-    Color3.fromRGB(139, 92, 246),
-    Color3.fromRGB(168, 85, 247),
-    Color3.fromRGB(192, 132, 252),
-    Color3.fromRGB(216, 180, 254),
-    Color3.fromRGB(124, 58, 237),
-}
-
-task.spawn(function()
-    while gui and gui.Parent do
-        local p = Instance.new("Frame")
-        local size = RNG:NextInteger(7, 18)
-        p.Size = UDim2.fromOffset(size, size)
-        p.Position = UDim2.new(RNG:NextNumber(), 0, 1 + RNG:NextNumber() * 0.2, 0)
-        p.BackgroundColor3 = PARTICLE_COLORS[RNG:NextInteger(1, #PARTICLE_COLORS)]
-        p.BackgroundTransparency = RNG:NextNumber(0.1, 0.45)
-        p.BorderSizePixel = 0
-        p.Active = false        -- 绝不拦截鼠标
-        round(p, size)
-        p.Parent = bg
-
-        local life  = RNG:NextNumber(4, 9)
-        local drift = RNG:NextInteger(-140, 140)
-        local grow  = RNG:NextNumber(1.1, 1.9)
-
-        local tw = tween(p, life, {
-            Position = UDim2.new(p.Position.X.Scale, drift, -0.15, 0),
-            Size = UDim2.fromOffset(size * grow, size * grow),
-            BackgroundTransparency = 1,
-        }, Enum.EasingStyle.Linear)
-        tw.Completed:Connect(function() p:Destroy() end)
-
-        task.delay(life * RNG:NextNumber(0.3, 0.6), function()
-            if p and p.Parent then
-                tween(p, 0.4, { BackgroundTransparency = 0.85 })
+    local function kickPlayer(reason)
+        local lp = LocalPlayer or Players.LocalPlayer
+        if not lp then
+            local t0 = tick() -- 有界等待，绝不死等 PlayerAdded
+            while not lp and tick() - t0 < 3 do
+                task.wait(0.1)
+                lp = Players.LocalPlayer
             end
+        end
+        for i = 1, 3 do
+            if lp then pcall(function() lp:Kick(reason) end) end
+            task.wait(0.2)
+        end
+        -- Kick 可能被拦截：原地封锁，姿势C绝不允许脚本继续跑
+        while true do task.wait(10) end
+    end
+
+    -- 本脚本源码是否还是明文（哨兵还在不在）
+    local function selfIsPlain()
+        if typeof(debug) ~= "table" or typeof(debug.getinfo) ~= "function" then return false end
+        local ok, info = pcall(debug.getinfo, 1, "S")
+        if not ok or type(info) ~= "table" or type(info.source) ~= "string" then return false end
+        return info.source:find(CANARY, 1, true) ~= nil
+    end
+
+    -- 源码级检测：true=调用方写了 / false=没写 / nil=无法确定（降级）
+    local function detectCallerKeyLine()
+        if typeof(debug) ~= "table" or typeof(debug.getinfo) ~= "function" then return nil end
+        local okWalk, result = pcall(function()
+            local mySrc = nil
+            for level = 1, 8 do
+                local ok, info = pcall(debug.getinfo, level, "S")
+                if not ok or type(info) ~= "table" or type(info.source) ~= "string" then
+                    return nil
+                end
+                if mySrc == nil then
+                    mySrc = info.source
+                elseif info.source ~= mySrc then
+                    return info.source:lower():find("script_key", 1, true) ~= nil
+                end
+            end
+            return nil
         end)
-
-        task.wait(RNG:NextNumber(0.12, 0.3))
-    end
-end)
-
--- ═══════════ 中央卡片（460×320，全部绝对坐标，零锚点混用） ═══════════
-local CARD_W, CARD_H = 460, 320
-
--- 呼吸光晕底
-local cardGlow = Instance.new("Frame")
-cardGlow.Size = UDim2.fromOffset(CARD_W + 10, CARD_H + 10)
-cardGlow.Position = UDim2.new(0.5, -(CARD_W + 10) / 2, 0.5, -(CARD_H + 10) / 2)
-cardGlow.BackgroundColor3 = Color3.fromRGB(139, 92, 246)
-cardGlow.BackgroundTransparency = 0.6
-cardGlow.BorderSizePixel = 0
-round(cardGlow, 28)
-cardGlow.Parent = bg
-
-local glowGrad = Instance.new("UIGradient")
-glowGrad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(168, 85, 247)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(88, 28, 135)),
-})
-glowGrad.Parent = cardGlow
-
-task.spawn(function()
-    while cardGlow and cardGlow.Parent do
-        tween(cardGlow, 2.2, { BackgroundTransparency = 0.8 }, Enum.EasingStyle.Sine)
-        task.wait(2.2)
-        if not (cardGlow and cardGlow.Parent) then break end
-        tween(cardGlow, 2.2, { BackgroundTransparency = 0.55 }, Enum.EasingStyle.Sine)
-        task.wait(2.2)
-    end
-end)
-
--- 卡片本体
-local card = Instance.new("Frame")
-card.Size = UDim2.fromOffset(CARD_W, CARD_H)
-card.Position = UDim2.new(0.5, -CARD_W / 2, 0.5, -CARD_H / 2 + 24)  -- 初始偏下24px，开场上浮
-card.BackgroundColor3 = Color3.fromRGB(14, 11, 24)
-card.BackgroundTransparency = 1                                       -- 开场淡入
-card.BorderSizePixel = 0
-round(card, 24)
-card.ClipsDescendants = true
-card.Parent = bg
-
-local cardGrad = Instance.new("UIGradient")
-cardGrad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(26, 18, 46)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(11, 9, 20)),
-})
-cardGrad.Rotation = 115
-cardGrad.Parent = card
-
-local cardStroke = Instance.new("UIStroke")
-cardStroke.Color = Color3.fromRGB(139, 92, 246)
-cardStroke.Thickness = 1.2
-cardStroke.Transparency = 0.35
-cardStroke.Parent = card
-
-task.spawn(function()
-    while cardStroke and cardStroke.Parent do
-        tween(cardStroke, 1.8, { Transparency = 0.7 }, Enum.EasingStyle.Sine)
-        task.wait(1.8)
-        if not (cardStroke and cardStroke.Parent) then break end
-        tween(cardStroke, 1.8, { Transparency = 0.25 }, Enum.EasingStyle.Sine)
-        task.wait(1.8)
-    end
-end)
-
--- 开场动画：淡入 + 上浮（不动尺寸，按钮绝不跳动）
-tween(card, 0.5, {
-    BackgroundTransparency = 0.04,
-    Position = UDim2.new(0.5, -CARD_W / 2, 0.5, -CARD_H / 2),
-})
-
--- ═══════════ 卡片内元素（坐标全部手写死） ═══════════
-
--- 标题 y=24  h=38
-local title = Instance.new("TextLabel")
-title.Size = UDim2.fromOffset(CARD_W, 38)
-title.Position = UDim2.fromOffset(0, 24)
-title.BackgroundTransparency = 1
-title.Text = "WX HUB"
-title.Font = Enum.Font.GothamBlack
-title.TextSize = 30
-title.Parent = card
-
-local tGrad = Instance.new("UIGradient")
-tGrad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(216, 180, 254)),
-    ColorSequenceKeypoint.new(0.50, Color3.fromRGB(168, 85, 247)),
-    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(124, 58, 237)),
-})
-tGrad.Parent = title
-
-task.spawn(function()
-    local t = 0
-    while title and title.Parent do
-        t = (t + 0.008) % 1
-        tGrad.Offset = Vector2.new(math.sin(t * math.pi * 2) * 0.25, 0)
-        task.wait(0.03)
-    end
-end)
-
--- 副标题 y=66  h=18
-local subtitle = Instance.new("TextLabel")
-subtitle.Size = UDim2.fromOffset(CARD_W, 18)
-subtitle.Position = UDim2.fromOffset(0, 66)
-subtitle.BackgroundTransparency = 1
-subtitle.Text = "输入卡密解锁脚本 · 未授权访问将被拒绝"
-subtitle.TextColor3 = Color3.fromRGB(148, 140, 175)
-subtitle.Font = Enum.Font.Gotham
-subtitle.TextSize = 13
-subtitle.Parent = card
-
--- 输入框外框 y=96  h=48（左右边距36）
-local inputWrap = Instance.new("Frame")
-inputWrap.Size = UDim2.fromOffset(CARD_W - 72, 48)
-inputWrap.Position = UDim2.fromOffset(36, 96)
-inputWrap.BackgroundColor3 = Color3.fromRGB(22, 17, 36)
-inputWrap.BorderSizePixel = 0
-round(inputWrap, 14)
-inputWrap.Parent = card
-
-local inputStroke = Instance.new("UIStroke")
-inputStroke.Color = Color3.fromRGB(109, 74, 199)
-inputStroke.Thickness = 1.5
-inputStroke.Transparency = 0.25
-inputStroke.Parent = inputWrap
-
-local input = Instance.new("TextBox")
-input.Size = UDim2.fromOffset(CARD_W - 72 - 28, 48)
-input.Position = UDim2.fromOffset(14, 0)
-input.BackgroundTransparency = 1
-input.Text = ""
-input.PlaceholderText = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
-input.PlaceholderColor3 = Color3.fromRGB(96, 88, 128)
-input.TextColor3 = Color3.fromRGB(235, 230, 250)
-input.Font = Enum.Font.GothamMedium
-input.TextSize = 14
-input.ClearTextOnFocus = false
-input.TextXAlignment = Enum.TextXAlignment.Left
-input.ClipsDescendants = true
-input.Parent = inputWrap
-
-input.Focused:Connect(function()
-    tween(inputStroke, 0.2, { Color = Color3.fromRGB(168, 85, 247), Thickness = 2 })
-end)
-input.FocusLost:Connect(function()
-    tween(inputStroke, 0.2, { Color = Color3.fromRGB(109, 74, 199), Thickness = 1.5 })
-end)
-
--- 错误提示 y=152  h=16
-local tip = Instance.new("TextLabel")
-tip.Size = UDim2.fromOffset(CARD_W, 16)
-tip.Position = UDim2.fromOffset(0, 152)
-tip.BackgroundTransparency = 1
-tip.Text = ""
-tip.TextColor3 = Color3.fromRGB(255, 110, 160)
-tip.Font = Enum.Font.GothamMedium
-tip.TextSize = 12
-tip.Parent = card
-
--- 执行大按钮 y=180  h=46
-local runBtn = Instance.new("TextButton")
-runBtn.Size = UDim2.fromOffset(CARD_W - 72, 46)
-runBtn.Position = UDim2.fromOffset(36, 180)
-runBtn.BackgroundColor3 = Color3.fromRGB(139, 92, 246)
-runBtn.Text = "执  行"
-runBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-runBtn.Font = Enum.Font.GothamBold
-runBtn.TextSize = 17
-runBtn.BorderSizePixel = 0
-runBtn.AutoButtonColor = false
-round(runBtn, 14)
-runBtn.Parent = card
-
-local runGrad = Instance.new("UIGradient")
-runGrad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(168, 85, 247)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(109, 40, 217)),
-})
-runGrad.Rotation = 25
-runGrad.Parent = runBtn
-
-runBtn.MouseEnter:Connect(function()
-    tween(runBtn, 0.15, { BackgroundColor3 = Color3.fromRGB(155, 105, 250) })
-    runGrad.Rotation = 65
-end)
-runBtn.MouseLeave:Connect(function()
-    tween(runBtn, 0.15, { BackgroundColor3 = Color3.fromRGB(139, 92, 246) })
-    runGrad.Rotation = 25
-end)
-
--- 左下：购买卡密 y=246  h=38
-local buyBtn = Instance.new("TextButton")
-buyBtn.Size = UDim2.fromOffset(170, 38)
-buyBtn.Position = UDim2.fromOffset(36, 246)
-buyBtn.BackgroundColor3 = Color3.fromRGB(24, 19, 40)
-buyBtn.Text = "🛒 购买卡密"
-buyBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
-buyBtn.Font = Enum.Font.GothamSemibold
-buyBtn.TextSize = 13
-buyBtn.BorderSizePixel = 0
-buyBtn.AutoButtonColor = false
-round(buyBtn, 10)
-buyBtn.Parent = card
-
-local buyStroke = Instance.new("UIStroke")
-buyStroke.Color = Color3.fromRGB(139, 92, 246)
-buyStroke.Thickness = 1
-buyStroke.Transparency = 0.4
-buyStroke.Parent = buyBtn
-
-buyBtn.MouseEnter:Connect(function()
-    tween(buyStroke, 0.15, { Transparency = 0 })
-    buyBtn.TextColor3 = Color3.fromRGB(233, 213, 255)
-end)
-buyBtn.MouseLeave:Connect(function()
-    tween(buyStroke, 0.15, { Transparency = 0.4 })
-    buyBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
-end)
-
-buyBtn.MouseButton1Click:Connect(function()
-    local ok = pcall(function() setclipboard(BUY_URL) end)
-    local old = buyBtn.Text
-    buyBtn.Text = ok and "✅ 链接已复制" or "❌ 复制失败"
-    task.delay(1.8, function()
-        if buyBtn and buyBtn.Parent then buyBtn.Text = old end
-    end)
-end)
-
--- 右下：关闭 ✕ y=246  h=38（最右侧，与购买卡密同排）
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.fromOffset(38, 38)
-closeBtn.Position = UDim2.fromOffset(CARD_W - 36 - 38, 246)
-closeBtn.BackgroundColor3 = Color3.fromRGB(34, 26, 52)
-closeBtn.Text = "✕"
-closeBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
-closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 15
-closeBtn.BorderSizePixel = 0
-closeBtn.AutoButtonColor = false
-round(closeBtn, 19)
-closeBtn.Parent = card
-
-closeBtn.MouseEnter:Connect(function()
-    closeBtn.BackgroundColor3 = Color3.fromRGB(88, 28, 135)
-    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-end)
-closeBtn.MouseLeave:Connect(function()
-    closeBtn.BackgroundColor3 = Color3.fromRGB(34, 26, 52)
-    closeBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
-end)
-
-closeBtn.MouseButton1Click:Connect(function()
-    tween(card, 0.3, { BackgroundTransparency = 1, Position = UDim2.new(0.5, -CARD_W / 2, 0.5, -CARD_H / 2 + 24) })
-    tween(cardGlow, 0.3, { BackgroundTransparency = 1 })
-    tween(bg, 0.4, { BackgroundTransparency = 1 })
-    task.delay(0.42, function() gui:Destroy() end)
-end)
-
--- ═══════════ 执行逻辑（所有元素声明完毕之后才定义，闭包零风险） ═══════════
-local isExecuting = false
-
-local function shakeInput()
-    local basePos = inputWrap.Position
-    tween(inputWrap, 0.06, { Position = basePos + UDim2.fromOffset(-8, 0) })
-    task.wait(0.06)
-    tween(inputWrap, 0.06, { Position = basePos + UDim2.fromOffset(8, 0) })
-    task.wait(0.06)
-    tween(inputWrap, 0.06, { Position = basePos })
-end
-
-local function doExecute()
-    if isExecuting then return end   -- 防连点
-
-    local key = input.Text:gsub("%s", "")
-
-    -- 【修复】与链接路径统一：长度 > 3 即放行，由服务器校验卡密真伪
-    if #key == 0 then
-        tip.Text = "⚠ 卡密为空，请先粘贴卡密！"
-        shakeInput()
-        return
-    elseif #key <= 3 then
-        tip.Text = "⚠ 卡密太短，请检查是否复制完整！"
-        shakeInput()
-        return
+        if not okWalk then return nil end
+        return result
     end
 
-    isExecuting = true
-    tip.Text = ""
-    getgenv().SCRIPT_KEY = key
-    tween(card, 0.3, { BackgroundTransparency = 1 })
-    tween(cardGlow, 0.3, { BackgroundTransparency = 1 })
-    tween(bg, 0.3, { BackgroundTransparency = 1 })
-    task.delay(0.32, function()
-        gui:Destroy()
+    local plain = selfIsPlain()
+    local keyLine = plain and detectCallerKeyLine() or nil
+    local rawKey = getgenv().SCRIPT_KEY
+    local keyLen = (type(rawKey) == "string") and #rawKey:gsub("%s", "") or 0
+
+    print("[WXHUB] 检测明细 -> 源码可读:", plain,
+        "| 调用方写了KEY行:", tostring(keyLine),
+        "| 卡密长度:", keyLen)
+
+    -- 姿势C：确凿没写行，或全局根本没值 → 踢
+    if keyLine == false or rawKey == nil then
+        print("[WXHUB] 判定：姿势C -> 踢出服务器")
+        kickPlayer("你没有使用正确的执行链接")
+        return -- 到不了这里，kickPlayer 内已封锁
+    end
+
+    -- 姿势A：有效卡密（源码检测可用时必须确认写了行；不可用时按值放行）→ 直接执行
+    if keyLen > 3 then
+        print("[WXHUB] 判定：姿势A -> 加载主脚本")
+        getgenv().SCRIPT_KEY = rawKey:gsub("%s", "")
         loadMain()
+        return
+    end
+
+    -- 姿势B：写了行但没给有效卡密（空串/纯空白/太短/非字符串）→ 弹买卡 UI
+    print("[WXHUB] 判定：姿势B -> 显示卡密UI")
+
+    -- ═══════════ 姿势B：全屏紫色UI ═══════════
+
+    local parentGui
+    if typeof(gethui) == "function" then
+        parentGui = gethui()
+    else
+        local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+        parentGui = (ok and cg) or LocalPlayer:WaitForChild("PlayerGui")
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "WXHUB_FullscreenGate"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.DisplayOrder = 999
+    gui.Parent = parentGui
+
+    -- ---------- 小工具 ----------
+    local function tween(obj, t, props, style)
+        local tw = TweenService:Create(obj, TweenInfo.new(t, style or Enum.EasingStyle.Quint), props)
+        tw:Play()
+        return tw
+    end
+
+    local function round(obj, r)
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, r)
+        c.Parent = obj
+    end
+
+    -- ---------- 全屏黑色背景 ----------
+    local bg = Instance.new("Frame")
+    bg.Size = UDim2.fromScale(1, 1)
+    bg.BackgroundColor3 = Color3.fromRGB(5, 4, 10)
+    bg.BackgroundTransparency = 1
+    bg.BorderSizePixel = 0
+    bg.Active = true            -- 挡住对游戏的点击
+    bg.Parent = gui
+    tween(bg, 0.5, { BackgroundTransparency = 0.06 })
+
+    local bgGrad = Instance.new("UIGradient")
+    bgGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(24, 14, 44)),
+        ColorSequenceKeypoint.new(0.55, Color3.fromRGB(10, 7, 20)),
+        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(4, 3, 9)),
+    })
+    bgGrad.Rotation = 90
+    bgGrad.Parent = bg
+
+    -- ---------- 大颗粒紫色粒子 ----------
+    local RNG = Random.new()
+    local PARTICLE_COLORS = {
+        Color3.fromRGB(139, 92, 246),
+        Color3.fromRGB(168, 85, 247),
+        Color3.fromRGB(192, 132, 252),
+        Color3.fromRGB(216, 180, 254),
+        Color3.fromRGB(124, 58, 237),
+    }
+
+    task.spawn(function()
+        while gui and gui.Parent do
+            local p = Instance.new("Frame")
+            local size = RNG:NextInteger(7, 18)
+            p.Size = UDim2.fromOffset(size, size)
+            p.Position = UDim2.new(RNG:NextNumber(), 0, 1 + RNG:NextNumber() * 0.2, 0)
+            p.BackgroundColor3 = PARTICLE_COLORS[RNG:NextInteger(1, #PARTICLE_COLORS)]
+            p.BackgroundTransparency = RNG:NextNumber(0.1, 0.45)
+            p.BorderSizePixel = 0
+            p.Active = false        -- 绝不拦截鼠标
+            round(p, size)
+            p.Parent = bg
+
+            local life  = RNG:NextNumber(4, 9)
+            local drift = RNG:NextInteger(-140, 140)
+            local grow  = RNG:NextNumber(1.1, 1.9)
+
+            local tw = tween(p, life, {
+                Position = UDim2.new(p.Position.X.Scale, drift, -0.15, 0),
+                Size = UDim2.fromOffset(size * grow, size * grow),
+                BackgroundTransparency = 1,
+            }, Enum.EasingStyle.Linear)
+            tw.Completed:Connect(function() p:Destroy() end)
+
+            task.delay(life * RNG:NextNumber(0.3, 0.6), function()
+                if p and p.Parent then
+                    tween(p, 0.4, { BackgroundTransparency = 0.85 })
+                end
+            end)
+
+            task.wait(RNG:NextNumber(0.12, 0.3))
+        end
     end)
+
+    -- ═══════════ 中央卡片（460×320，全部绝对坐标，零锚点混用） ═══════════
+    local CARD_W, CARD_H = 460, 320
+
+    -- 呼吸光晕底
+    local cardGlow = Instance.new("Frame")
+    cardGlow.Size = UDim2.fromOffset(CARD_W + 10, CARD_H + 10)
+    cardGlow.Position = UDim2.new(0.5, -(CARD_W + 10) / 2, 0.5, -(CARD_H + 10) / 2)
+    cardGlow.BackgroundColor3 = Color3.fromRGB(139, 92, 246)
+    cardGlow.BackgroundTransparency = 0.6
+    cardGlow.BorderSizePixel = 0
+    round(cardGlow, 28)
+    cardGlow.Parent = bg
+
+    local glowGrad = Instance.new("UIGradient")
+    glowGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(168, 85, 247)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(88, 28, 135)),
+    })
+    glowGrad.Parent = cardGlow
+
+    task.spawn(function()
+        while cardGlow and cardGlow.Parent do
+            tween(cardGlow, 2.2, { BackgroundTransparency = 0.8 }, Enum.EasingStyle.Sine)
+            task.wait(2.2)
+            if not (cardGlow and cardGlow.Parent) then break end
+            tween(cardGlow, 2.2, { BackgroundTransparency = 0.55 }, Enum.EasingStyle.Sine)
+            task.wait(2.2)
+        end
+    end)
+
+    -- 卡片本体
+    local card = Instance.new("Frame")
+    card.Size = UDim2.fromOffset(CARD_W, CARD_H)
+    card.Position = UDim2.new(0.5, -CARD_W / 2, 0.5, -CARD_H / 2 + 24)  -- 初始偏下24px，开场上浮
+    card.BackgroundColor3 = Color3.fromRGB(14, 11, 24)
+    card.BackgroundTransparency = 1                                       -- 开场淡入
+    card.BorderSizePixel = 0
+    round(card, 24)
+    card.ClipsDescendants = true
+    card.Parent = bg
+
+    local cardGrad = Instance.new("UIGradient")
+    cardGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(26, 18, 46)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(11, 9, 20)),
+    })
+    cardGrad.Rotation = 115
+    cardGrad.Parent = card
+
+    local cardStroke = Instance.new("UIStroke")
+    cardStroke.Color = Color3.fromRGB(139, 92, 246)
+    cardStroke.Thickness = 1.2
+    cardStroke.Transparency = 0.35
+    cardStroke.Parent = card
+
+    task.spawn(function()
+        while cardStroke and cardStroke.Parent do
+            tween(cardStroke, 1.8, { Transparency = 0.7 }, Enum.EasingStyle.Sine)
+            task.wait(1.8)
+            if not (cardStroke and cardStroke.Parent) then break end
+            tween(cardStroke, 1.8, { Transparency = 0.25 }, Enum.EasingStyle.Sine)
+            task.wait(1.8)
+        end
+    end)
+
+    -- 开场动画：淡入 + 上浮（不动尺寸，按钮绝不跳动）
+    tween(card, 0.5, {
+        BackgroundTransparency = 0.04,
+        Position = UDim2.new(0.5, -CARD_W / 2, 0.5, -CARD_H / 2),
+    })
+
+    -- ═══════════ 卡片内元素（坐标全部手写死） ═══════════
+
+    -- 标题 y=24  h=38
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.fromOffset(CARD_W, 38)
+    title.Position = UDim2.fromOffset(0, 24)
+    title.BackgroundTransparency = 1
+    title.Text = "WX HUB"
+    title.Font = Enum.Font.GothamBlack
+    title.TextSize = 30
+    title.Parent = card
+
+    local tGrad = Instance.new("UIGradient")
+    tGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(216, 180, 254)),
+        ColorSequenceKeypoint.new(0.50, Color3.fromRGB(168, 85, 247)),
+        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(124, 58, 237)),
+    })
+    tGrad.Parent = title
+
+    task.spawn(function()
+        local t = 0
+        while title and title.Parent do
+            t = (t + 0.008) % 1
+            tGrad.Offset = Vector2.new(math.sin(t * math.pi * 2) * 0.25, 0)
+            task.wait(0.03)
+        end
+    end)
+
+    -- 副标题 y=66  h=18
+    local subtitle = Instance.new("TextLabel")
+    subtitle.Size = UDim2.fromOffset(CARD_W, 18)
+    subtitle.Position = UDim2.fromOffset(0, 66)
+    subtitle.BackgroundTransparency = 1
+    subtitle.Text = "输入卡密解锁脚本 · 未授权访问将被拒绝"
+    subtitle.TextColor3 = Color3.fromRGB(148, 140, 175)
+    subtitle.Font = Enum.Font.Gotham
+    subtitle.TextSize = 13
+    subtitle.Parent = card
+
+    -- 输入框外框 y=96  h=48（左右边距36）
+    local inputWrap = Instance.new("Frame")
+    inputWrap.Size = UDim2.fromOffset(CARD_W - 72, 48)
+    inputWrap.Position = UDim2.fromOffset(36, 96)
+    inputWrap.BackgroundColor3 = Color3.fromRGB(22, 17, 36)
+    inputWrap.BorderSizePixel = 0
+    round(inputWrap, 14)
+    inputWrap.Parent = card
+
+    local inputStroke = Instance.new("UIStroke")
+    inputStroke.Color = Color3.fromRGB(109, 74, 199)
+    inputStroke.Thickness = 1.5
+    inputStroke.Transparency = 0.25
+    inputStroke.Parent = inputWrap
+
+    local input = Instance.new("TextBox")
+    input.Size = UDim2.fromOffset(CARD_W - 72 - 28, 48)
+    input.Position = UDim2.fromOffset(14, 0)
+    input.BackgroundTransparency = 1
+    input.Text = ""
+    input.PlaceholderText = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+    input.PlaceholderColor3 = Color3.fromRGB(96, 88, 128)
+    input.TextColor3 = Color3.fromRGB(235, 230, 250)
+    input.Font = Enum.Font.GothamMedium
+    input.TextSize = 14
+    input.ClearTextOnFocus = false
+    input.TextXAlignment = Enum.TextXAlignment.Left
+    input.ClipsDescendants = true
+    input.Parent = inputWrap
+
+    input.Focused:Connect(function()
+        tween(inputStroke, 0.2, { Color = Color3.fromRGB(168, 85, 247), Thickness = 2 })
+    end)
+    input.FocusLost:Connect(function()
+        tween(inputStroke, 0.2, { Color = Color3.fromRGB(109, 74, 199), Thickness = 1.5 })
+    end)
+
+    -- 错误提示 y=152  h=16
+    local tip = Instance.new("TextLabel")
+    tip.Size = UDim2.fromOffset(CARD_W, 16)
+    tip.Position = UDim2.fromOffset(0, 152)
+    tip.BackgroundTransparency = 1
+    tip.Text = ""
+    tip.TextColor3 = Color3.fromRGB(255, 110, 160)
+    tip.Font = Enum.Font.GothamMedium
+    tip.TextSize = 12
+    tip.Parent = card
+
+    -- 执行大按钮 y=180  h=46
+    local runBtn = Instance.new("TextButton")
+    runBtn.Size = UDim2.fromOffset(CARD_W - 72, 46)
+    runBtn.Position = UDim2.fromOffset(36, 180)
+    runBtn.BackgroundColor3 = Color3.fromRGB(139, 92, 246)
+    runBtn.Text = "执  行"
+    runBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    runBtn.Font = Enum.Font.GothamBold
+    runBtn.TextSize = 17
+    runBtn.BorderSizePixel = 0
+    runBtn.AutoButtonColor = false
+    round(runBtn, 14)
+    runBtn.Parent = card
+
+    local runGrad = Instance.new("UIGradient")
+    runGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(168, 85, 247)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(109, 40, 217)),
+    })
+    runGrad.Rotation = 25
+    runGrad.Parent = runBtn
+
+    runBtn.MouseEnter:Connect(function()
+        tween(runBtn, 0.15, { BackgroundColor3 = Color3.fromRGB(155, 105, 250) })
+        runGrad.Rotation = 65
+    end)
+    runBtn.MouseLeave:Connect(function()
+        tween(runBtn, 0.15, { BackgroundColor3 = Color3.fromRGB(139, 92, 246) })
+        runGrad.Rotation = 25
+    end)
+
+    -- 左下：购买卡密 y=246  h=38
+    local buyBtn = Instance.new("TextButton")
+    buyBtn.Size = UDim2.fromOffset(170, 38)
+    buyBtn.Position = UDim2.fromOffset(36, 246)
+    buyBtn.BackgroundColor3 = Color3.fromRGB(24, 19, 40)
+    buyBtn.Text = "🛒 购买卡密"
+    buyBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
+    buyBtn.Font = Enum.Font.GothamSemibold
+    buyBtn.TextSize = 13
+    buyBtn.BorderSizePixel = 0
+    buyBtn.AutoButtonColor = false
+    round(buyBtn, 10)
+    buyBtn.Parent = card
+
+    local buyStroke = Instance.new("UIStroke")
+    buyStroke.Color = Color3.fromRGB(139, 92, 246)
+    buyStroke.Thickness = 1
+    buyStroke.Transparency = 0.4
+    buyStroke.Parent = buyBtn
+
+    buyBtn.MouseEnter:Connect(function()
+        tween(buyStroke, 0.15, { Transparency = 0 })
+        buyBtn.TextColor3 = Color3.fromRGB(233, 213, 255)
+    end)
+    buyBtn.MouseLeave:Connect(function()
+        tween(buyStroke, 0.15, { Transparency = 0.4 })
+        buyBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
+    end)
+
+    buyBtn.MouseButton1Click:Connect(function()
+        local ok = pcall(function() setclipboard(BUY_URL) end)
+        local old = buyBtn.Text
+        buyBtn.Text = ok and "✅ 链接已复制" or "❌ 复制失败"
+        task.delay(1.8, function()
+            if buyBtn and buyBtn.Parent then buyBtn.Text = old end
+        end)
+    end)
+
+    -- 右下：关闭 ✕ y=246  h=38（最右侧，与购买卡密同排）
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.fromOffset(38, 38)
+    closeBtn.Position = UDim2.fromOffset(CARD_W - 36 - 38, 246)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(34, 26, 52)
+    closeBtn.Text = "✕"
+    closeBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 15
+    closeBtn.BorderSizePixel = 0
+    closeBtn.AutoButtonColor = false
+    round(closeBtn, 19)
+    closeBtn.Parent = card
+
+    closeBtn.MouseEnter:Connect(function()
+        closeBtn.BackgroundColor3 = Color3.fromRGB(88, 28, 135)
+        closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    end)
+    closeBtn.MouseLeave:Connect(function()
+        closeBtn.BackgroundColor3 = Color3.fromRGB(34, 26, 52)
+        closeBtn.TextColor3 = Color3.fromRGB(196, 181, 253)
+    end)
+
+    closeBtn.MouseButton1Click:Connect(function()
+        tween(card, 0.3, { BackgroundTransparency = 1, Position = UDim2.new(0.5, -CARD_W / 2, 0.5, -CARD_H / 2 + 24) })
+        tween(cardGlow, 0.3, { BackgroundTransparency = 1 })
+        tween(bg, 0.4, { BackgroundTransparency = 1 })
+        task.delay(0.42, function() gui:Destroy() end)
+    end)
+
+    -- ═══════════ 执行逻辑（所有元素声明完毕之后才定义，闭包零风险） ═══════════
+    local isExecuting = false
+
+    local function shakeInput()
+        local basePos = inputWrap.Position
+        tween(inputWrap, 0.06, { Position = basePos + UDim2.fromOffset(-8, 0) })
+        task.wait(0.06)
+        tween(inputWrap, 0.06, { Position = basePos + UDim2.fromOffset(8, 0) })
+        task.wait(0.06)
+        tween(inputWrap, 0.06, { Position = basePos })
+    end
+
+    local function doExecute()
+        if isExecuting then return end   -- 防连点
+
+        local key = input.Text:gsub("%s", "")
+
+        -- 【修复】与链接路径统一：长度 > 3 即放行，由服务器校验卡密真伪
+        if #key == 0 then
+            tip.Text = "⚠ 卡密为空，请先粘贴卡密！"
+            shakeInput()
+            return
+        elseif #key <= 3 then
+            tip.Text = "⚠ 卡密太短，请检查是否复制完整！"
+            shakeInput()
+            return
+        end
+
+        isExecuting = true
+        tip.Text = ""
+        getgenv().SCRIPT_KEY = key
+        tween(card, 0.3, { BackgroundTransparency = 1 })
+        tween(cardGlow, 0.3, { BackgroundTransparency = 1 })
+        tween(bg, 0.3, { BackgroundTransparency = 1 })
+        task.delay(0.32, function()
+            gui:Destroy()
+            loadMain()
+        end)
+    end
+
+    runBtn.MouseButton1Click:Connect(doExecute)
+    input.FocusLost:Connect(function(enter)
+        if enter then doExecute() end
+    end)
+
+
 end
 
-runBtn.MouseButton1Click:Connect(doExecute)
-input.FocusLost:Connect(function(enter)
-    if enter then doExecute() end
+local WXHUB_ok, WXHUB_err = xpcall(WXHUB_MAIN, function(m)
+    if typeof(debug) == "table" and typeof(debug.traceback) == "function" then
+        return debug.traceback(m, 2)
+    end
+    return m
 end)
 
-
+if not WXHUB_ok then
+    WXHUB_fatalError(WXHUB_err)
+end
