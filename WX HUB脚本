@@ -1,72 +1,57 @@
---[[
-    ============================================================
-    卡密输入 UI（修复 loadstring 获取问题）
-    ============================================================
---]]
+-- ============================================================
+-- 卡密输入 UI
+-- 流程：弹窗 → 输入卡密 → 执行 → 写入 SCRIPT_KEY → 加载脚本
+-- ============================================================
 
---================= 环境获取（彻底修复版）=================--
-local function getEnv()
-    -- 优先拿 getgenv
-    local ok, env = pcall(function() return getgenv() end)
-    if ok and type(env) == "table" then return env end
-    -- 退而求其次拿 shared
-    if type(shared) == "table" then return shared end
-    -- 最后兜底 _G
-    return _G
-end
-local ENV = getEnv()
+local SCRIPT_URL = "https://api.jnkie.com/api/v1/luascripts/public/17c623de8d29bf1f8de353253ab468722d61b3ffce34150ca6302f08d96d65d2/download"
+local BUY_URL    = "https://ds.xiaoman.top/links/342F4A3D"
 
--- 强制获取 loadstring（修复混淆导致的 nil 问题）
-local g_loadstr = ENV.loadstring or loadstring
-if type(g_loadstr) ~= "function" then
-    -- 如果还是拿不到，尝试直接用纯全局变量
-    pcall(function() g_loadstr = _G.loadstring end)
-end
+-- ================= 环境与函数捕获 =================
+-- 直接使用全局 loadstring，不做 rawget，避免混淆后拿不到
+local g_loadstr = loadstring
+local g_setclip = setclipboard
 
--- 顺便获取其他执行器函数
-local g_setclip = ENV.setclipboard or setclipboard
-
--- 闭包保留 self
+-- 用闭包包裹 HttpGet，保留 game 上下文，避免 "Instance expected" 报错
 local function g_httpget(url)
     return game:HttpGet(url)
 end
 
---================= 服务 =================--
 local Players      = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local RunService   = game:GetService("RunService")
 local CoreGui      = game:GetService("CoreGui")
 local LocalPlayer  = Players.LocalPlayer
 
---================= 配置 =================--
-local SCRIPT_URL = "https://api.jnkie.com/api/v1/luascripts/public/17c623de8d29bf1f8de353253ab468722d61b3ffce34150ca6302f08d96d65d2/download"
-local BUY_URL    = "https://ds.xiaoman.top/links/342F4A3D"
-local KEY_FORMAT = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
-
---================= 加载目标脚本 =================--
+-- ================= 加载目标脚本 =================
 local function runScript()
     local ok, err = pcall(function()
         local src = g_httpget(SCRIPT_URL)
-        if type(src) ~= "string" or src == "" then error("HttpGet 返回异常，请检查网络") end
-        
-        -- 极其关键：如果 g_loadstr 还是空，报错要人性化，且尝试原生 loadstring
+        if type(src) ~= "string" or src == "" then
+            error("HttpGet 返回为空，请检查网络或链接是否有效")
+        end
+
+        -- 优先使用捕获的 loadstring，如果为 nil 则直接调用全局 loadstring
         local loader = g_loadstr
         if type(loader) ~= "function" then
-            loader = loadstring -- 原生尝试
+            loader = loadstring
         end
         if type(loader) ~= "function" then
-            error("你的执行器加载器异常，请重启执行器后重试")
+            error("无法获取 loadstring，请重启执行器后重试")
         end
-        
+
         local fn, cerr = loader(src)
-        if not fn then error("编译失败: " .. tostring(cerr)) end
+        if not fn then
+            error("编译失败: " .. tostring(cerr))
+        end
         fn()
     end)
-    if not ok then warn("[KeyAuth] 加载失败: " .. tostring(err)) end
+    if not ok then
+        warn("[KeyAuth] 加载失败: " .. tostring(err))
+    end
     return ok
 end
 
---================= 创建 UI =================--
+-- ================= 创建 UI =================
 local gui = Instance.new("ScreenGui")
 gui.Name = "KeyAuthUI"
 gui.ResetOnSpawn = false
@@ -170,6 +155,7 @@ TweenService:Create(main, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.Easing
     Size = UDim2.fromOffset(540, 320)
 }):Play()
 
+-- 标题
 local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1
 title.Position = UDim2.new(0, 0, 0, 18)
@@ -187,6 +173,7 @@ titleGrad.Color = ColorSequence.new({
 })
 titleGrad.Parent = title
 
+-- 分割线
 local divider = Instance.new("Frame")
 divider.Position = UDim2.new(0, 24, 0, 58)
 divider.Size = UDim2.new(1, -48, 0, 1)
@@ -196,6 +183,7 @@ divider.BorderSizePixel = 0
 divider.ZIndex = 11
 divider.Parent = main
 
+-- 关闭按钮
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.fromOffset(30, 30)
 closeBtn.Position = UDim2.new(1, -42, 0, 14)
@@ -216,6 +204,7 @@ closeBtn.MouseLeave:Connect(function()
     TweenService:Create(closeBtn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(58, 28, 100) }):Play()
 end)
 
+-- 提示
 local hint = Instance.new("TextLabel")
 hint.BackgroundTransparency = 1
 hint.Position = UDim2.new(0, 24, 0, 78)
@@ -227,6 +216,7 @@ hint.TextSize = 15
 hint.ZIndex = 11
 hint.Parent = main
 
+-- 输入框
 local box = Instance.new("TextBox")
 box.Position = UDim2.new(0, 24, 0, 116)
 box.Size = UDim2.new(1, -48, 0, 48)
@@ -257,18 +247,20 @@ box.FocusLost:Connect(function()
     TweenService:Create(boxStroke, TweenInfo.new(0.2), { Color = Color3.fromRGB(110, 60, 190), Transparency = 0.25 }):Play()
 end)
 
+-- 格式提示
 local fmtTip = Instance.new("TextLabel")
 fmtTip.BackgroundTransparency = 1
 fmtTip.Position = UDim2.new(0, 24, 0, 170)
 fmtTip.Size = UDim2.new(1, -48, 0, 20)
 fmtTip.Font = Enum.Font.Gotham
-fmtTip.Text = "卡密格式:  " .. KEY_FORMAT
+fmtTip.Text = "卡密格式:  XXXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
 fmtTip.TextColor3 = Color3.fromRGB(140, 115, 185)
 fmtTip.TextSize = 13
 fmtTip.TextXAlignment = Enum.TextXAlignment.Left
 fmtTip.ZIndex = 11
 fmtTip.Parent = main
 
+-- 购买按钮
 local buyBtn = Instance.new("TextButton")
 buyBtn.Position = UDim2.new(0, 24, 0, 212)
 buyBtn.Size = UDim2.fromOffset(200, 46)
@@ -283,6 +275,7 @@ buyBtn.Parent = main
 local buyCorner = Instance.new("UICorner"); buyCorner.CornerRadius = UDim.new(0, 10); buyCorner.Parent = buyBtn
 local buyStroke = Instance.new("UIStroke"); buyStroke.Color = Color3.fromRGB(130, 75, 220); buyStroke.Thickness = 1.5; buyStroke.Transparency = 0.3; buyStroke.Parent = buyBtn
 
+-- 执行按钮
 local execBtn = Instance.new("TextButton")
 execBtn.Position = UDim2.new(0, 316, 0, 212)
 execBtn.Size = UDim2.fromOffset(200, 46)
@@ -303,6 +296,7 @@ execGrad.Color = ColorSequence.new({
 execGrad.Parent = execBtn
 local execStroke = Instance.new("UIStroke"); execStroke.Color = Color3.fromRGB(200, 150, 255); execStroke.Thickness = 1.5; execStroke.Transparency = 0.25; execStroke.Parent = execBtn
 
+-- 状态栏
 local status = Instance.new("TextLabel")
 status.BackgroundTransparency = 1
 status.Position = UDim2.new(0, 24, 0, 268)
@@ -316,7 +310,7 @@ status.TextXAlignment = Enum.TextXAlignment.Left
 status.ZIndex = 11
 status.Parent = main
 
---================= 交互 =================--
+-- ================= 交互逻辑 =================
 local function destroyUI()
     if gui and gui.Parent then gui:Destroy() end
 end
@@ -350,6 +344,7 @@ end)
 
 closeBtn.MouseButton1Click:Connect(function() destroyUI() end)
 
+-- 购买卡密
 buyBtn.MouseButton1Click:Connect(function()
     if type(g_setclip) == "function" then
         local ok = pcall(g_setclip, BUY_URL)
@@ -363,6 +358,7 @@ buyBtn.MouseButton1Click:Connect(function()
     status.TextColor3 = Color3.fromRGB(255, 185, 95)
 end)
 
+-- 提交执行
 local function submit()
     local text = box.Text
     if text == nil or text == "" then
@@ -380,9 +376,8 @@ local function submit()
         return
     end
 
-    -- 写入卡密
-    ENV.SCRIPT_KEY = text
-    getgenv().SCRIPT_KEY = text  -- 双保险
+    -- 写入卡密到执行器环境
+    getgenv().SCRIPT_KEY = text
 
     status.Text = "🔓 正在加载脚本，请稍候..."
     status.TextColor3 = Color3.fromRGB(205, 170, 255)
