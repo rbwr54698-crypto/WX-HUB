@@ -1,38 +1,32 @@
 --[[
     ============================================================
-    卡密输入 UI（简化版）
-    ============================================================
-    执行方式：
-        loadstring(game:HttpGet("你的脚本链接"))()
-
-    流程：
-        弹出 UI → 输入卡密 → 点击执行 → 写入 SCRIPT_KEY → 加载目标脚本
+    卡密输入 UI（修复 loadstring 获取问题）
     ============================================================
 --]]
 
---================= 全局捕获（抗混淆）=================--
-local function safeGet(name)
-    local v = rawget(_G, name)
-    if v ~= nil then return v end
-    local ok, r = pcall(function() return _G[name] end)
-    if ok and r ~= nil then return r end
-    return nil
-end
-
-local g_getgenv = safeGet("getgenv")
-local g_setclip = safeGet("setclipboard")
-local g_loadstr = safeGet("loadstring")
-
+--================= 环境获取（彻底修复版）=================--
 local function getEnv()
-    if type(g_getgenv) == "function" then
-        local ok, env = pcall(g_getgenv)
-        if ok and type(env) == "table" then return env end
-    end
+    -- 优先拿 getgenv
+    local ok, env = pcall(function() return getgenv() end)
+    if ok and type(env) == "table" then return env end
+    -- 退而求其次拿 shared
+    if type(shared) == "table" then return shared end
+    -- 最后兜底 _G
     return _G
 end
 local ENV = getEnv()
 
--- 闭包保留 self，避免 Instance expected, got string
+-- 强制获取 loadstring（修复混淆导致的 nil 问题）
+local g_loadstr = ENV.loadstring or loadstring
+if type(g_loadstr) ~= "function" then
+    -- 如果还是拿不到，尝试直接用纯全局变量
+    pcall(function() g_loadstr = _G.loadstring end)
+end
+
+-- 顺便获取其他执行器函数
+local g_setclip = ENV.setclipboard or setclipboard
+
+-- 闭包保留 self
 local function g_httpget(url)
     return game:HttpGet(url)
 end
@@ -53,9 +47,18 @@ local KEY_FORMAT = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
 local function runScript()
     local ok, err = pcall(function()
         local src = g_httpget(SCRIPT_URL)
-        if type(src) ~= "string" or src == "" then error("HttpGet 返回异常") end
-        if type(g_loadstr) ~= "function" then error("执行器不支持 loadstring") end
-        local fn, cerr = g_loadstr(src)
+        if type(src) ~= "string" or src == "" then error("HttpGet 返回异常，请检查网络") end
+        
+        -- 极其关键：如果 g_loadstr 还是空，报错要人性化，且尝试原生 loadstring
+        local loader = g_loadstr
+        if type(loader) ~= "function" then
+            loader = loadstring -- 原生尝试
+        end
+        if type(loader) ~= "function" then
+            error("你的执行器加载器异常，请重启执行器后重试")
+        end
+        
+        local fn, cerr = loader(src)
         if not fn then error("编译失败: " .. tostring(cerr)) end
         fn()
     end)
@@ -167,7 +170,6 @@ TweenService:Create(main, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.Easing
     Size = UDim2.fromOffset(540, 320)
 }):Play()
 
--- 标题
 local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1
 title.Position = UDim2.new(0, 0, 0, 18)
@@ -185,7 +187,6 @@ titleGrad.Color = ColorSequence.new({
 })
 titleGrad.Parent = title
 
--- 分割线
 local divider = Instance.new("Frame")
 divider.Position = UDim2.new(0, 24, 0, 58)
 divider.Size = UDim2.new(1, -48, 0, 1)
@@ -195,7 +196,6 @@ divider.BorderSizePixel = 0
 divider.ZIndex = 11
 divider.Parent = main
 
--- 关闭按钮
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.fromOffset(30, 30)
 closeBtn.Position = UDim2.new(1, -42, 0, 14)
@@ -216,7 +216,6 @@ closeBtn.MouseLeave:Connect(function()
     TweenService:Create(closeBtn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(58, 28, 100) }):Play()
 end)
 
--- 提示
 local hint = Instance.new("TextLabel")
 hint.BackgroundTransparency = 1
 hint.Position = UDim2.new(0, 24, 0, 78)
@@ -228,7 +227,6 @@ hint.TextSize = 15
 hint.ZIndex = 11
 hint.Parent = main
 
--- 输入框
 local box = Instance.new("TextBox")
 box.Position = UDim2.new(0, 24, 0, 116)
 box.Size = UDim2.new(1, -48, 0, 48)
@@ -259,7 +257,6 @@ box.FocusLost:Connect(function()
     TweenService:Create(boxStroke, TweenInfo.new(0.2), { Color = Color3.fromRGB(110, 60, 190), Transparency = 0.25 }):Play()
 end)
 
--- 格式提示
 local fmtTip = Instance.new("TextLabel")
 fmtTip.BackgroundTransparency = 1
 fmtTip.Position = UDim2.new(0, 24, 0, 170)
@@ -272,7 +269,6 @@ fmtTip.TextXAlignment = Enum.TextXAlignment.Left
 fmtTip.ZIndex = 11
 fmtTip.Parent = main
 
--- 购买按钮
 local buyBtn = Instance.new("TextButton")
 buyBtn.Position = UDim2.new(0, 24, 0, 212)
 buyBtn.Size = UDim2.fromOffset(200, 46)
@@ -287,7 +283,6 @@ buyBtn.Parent = main
 local buyCorner = Instance.new("UICorner"); buyCorner.CornerRadius = UDim.new(0, 10); buyCorner.Parent = buyBtn
 local buyStroke = Instance.new("UIStroke"); buyStroke.Color = Color3.fromRGB(130, 75, 220); buyStroke.Thickness = 1.5; buyStroke.Transparency = 0.3; buyStroke.Parent = buyBtn
 
--- 执行按钮
 local execBtn = Instance.new("TextButton")
 execBtn.Position = UDim2.new(0, 316, 0, 212)
 execBtn.Size = UDim2.fromOffset(200, 46)
@@ -308,7 +303,6 @@ execGrad.Color = ColorSequence.new({
 execGrad.Parent = execBtn
 local execStroke = Instance.new("UIStroke"); execStroke.Color = Color3.fromRGB(200, 150, 255); execStroke.Thickness = 1.5; execStroke.Transparency = 0.25; execStroke.Parent = execBtn
 
--- 状态栏
 local status = Instance.new("TextLabel")
 status.BackgroundTransparency = 1
 status.Position = UDim2.new(0, 24, 0, 268)
@@ -356,7 +350,6 @@ end)
 
 closeBtn.MouseButton1Click:Connect(function() destroyUI() end)
 
--- 购买卡密
 buyBtn.MouseButton1Click:Connect(function()
     if type(g_setclip) == "function" then
         local ok = pcall(g_setclip, BUY_URL)
@@ -370,14 +363,12 @@ buyBtn.MouseButton1Click:Connect(function()
     status.TextColor3 = Color3.fromRGB(255, 185, 95)
 end)
 
--- 执行
 local function submit()
     local text = box.Text
     if text == nil or text == "" then
         status.Text = "⚠ 请先输入卡密"
         status.TextColor3 = Color3.fromRGB(255, 130, 130)
 
-        -- 输入框抖动反馈
         local origPos = box.Position
         for i = 1, 4 do
             TweenService:Create(box, TweenInfo.new(0.04), {
