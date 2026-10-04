@@ -253,401 +253,316 @@ for _,dick in pairs({"rconsoleprint","rconsolewarn","rconsoleinfo","rconsoleerr"
 end
 
 
--- ============================================================
--- 卡密输入 UI
--- 流程：弹窗 → 输入卡密 → 执行 → 写入 SCRIPT_KEY → 加载脚本
--- ============================================================
+--// 卡密验证 UI · 紫色粒子版
+--// 功能：输入任意卡密 -> 写入 getgenv().SCRIPT_KEY -> 执行目标脚本
 
-local SCRIPT_URL = "https://api.jnkie.com/api/v1/luascripts/public/17c623de8d29bf1f8de353253ab468722d61b3ffce34150ca6302f08d96d65d2/download"
-local BUY_URL    = "https://ds.xiaoman.top/links/342F4A3D"
+local Players           = game:GetService("Players")
+local TweenService      = game:GetService("TweenService")
+local UserInputService  = game:GetService("UserInputService")
+local player            = Players.LocalPlayer
+local PlayerGui         = player:WaitForChild("PlayerGui")
 
--- ================= 环境与函数捕获 =================
--- 直接使用全局 loadstring，不做 rawget，避免混淆后拿不到
-local g_loadstr = loadstring
-local g_setclip = setclipboard
+--// 配置区
+local PURCHASE_LINK = "https://ds.xiaoman.top/links/342F4A3D"
+local TARGET_URL    = "https://api.jnkie.com/api/v1/luascripts/public/17c623de8d29bf1f8de353253ab468722d61b3ffce34150ca6302f08d96d65d2/download"
 
--- 用闭包包裹 HttpGet，保留 game 上下文，避免 "Instance expected" 报错
-local function g_httpget(url)
-    return game:HttpGet(url)
-end
+--// 防重复
+if getgenv and getgenv().__KeyUI_Loaded then return end
+if getgenv then getgenv().__KeyUI_Loaded = true end
 
-local Players      = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local RunService   = game:GetService("RunService")
-local CoreGui      = game:GetService("CoreGui")
-local LocalPlayer  = Players.LocalPlayer
+--// 清理旧的
+local old = PlayerGui:FindFirstChild("KeySystem_UI")
+if old then old:Destroy() end
 
--- ================= 加载目标脚本 =================
-local function runScript()
-    local ok, err = pcall(function()
-        local src = g_httpget(SCRIPT_URL)
-        if type(src) ~= "string" or src == "" then
-            error("HttpGet 返回为空，请检查网络或链接是否有效")
-        end
-
-        -- 优先使用捕获的 loadstring，如果为 nil 则直接调用全局 loadstring
-        local loader = g_loadstr
-        if type(loader) ~= "function" then
-            loader = loadstring
-        end
-        if type(loader) ~= "function" then
-            error("无法获取 loadstring，请重启执行器后重试")
-        end
-
-        local fn, cerr = loader(src)
-        if not fn then
-            error("编译失败: " .. tostring(cerr))
-        end
-        fn()
-    end)
-    if not ok then
-        warn("[KeyAuth] 加载失败: " .. tostring(err))
-    end
-    return ok
-end
-
--- ================= 创建 UI =================
 local gui = Instance.new("ScreenGui")
-gui.Name = "KeyAuthUI"
+gui.Name = "KeySystem_UI"
 gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
-gui.DisplayOrder = 999
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.IgnoreGuiInset = true
+gui.Parent = PlayerGui
 
-local attached = pcall(function() gui.Parent = CoreGui end)
-if not attached then
-    pcall(function() gui.Parent = LocalPlayer:WaitForChild("PlayerGui") end)
-end
-
--- 遮罩
-local backdrop = Instance.new("Frame")
-backdrop.Size = UDim2.fromScale(1, 1)
-backdrop.BackgroundColor3 = Color3.fromRGB(6, 3, 14)
-backdrop.BackgroundTransparency = 1
-backdrop.BorderSizePixel = 0
-backdrop.ZIndex = 1
-backdrop.Parent = gui
-TweenService:Create(backdrop, TweenInfo.new(0.5), { BackgroundTransparency = 0.35 }):Play()
-
--- 粒子层
-local particleLayer = Instance.new("Frame")
-particleLayer.Size = UDim2.fromScale(1, 1)
-particleLayer.BackgroundTransparency = 1
-particleLayer.BorderSizePixel = 0
-particleLayer.ClipsDescendants = false
-particleLayer.ZIndex = 2
-particleLayer.Parent = gui
+--// 紫色粒子背景（全屏暗色 + 漂浮光点）
+local bg = Instance.new("Frame")
+bg.Size = UDim2.new(1, 0, 1, 0)
+bg.BackgroundColor3 = Color3.fromRGB(10, 5, 20)
+bg.BackgroundTransparency = 0.25
+bg.BorderSizePixel = 0
+bg.Parent = gui
 
 local particles = {}
-local function newParticle(fromBottom)
-    local size = math.random(3, 8)
+for i = 1, 28 do
     local p = Instance.new("Frame")
-    p.Size = UDim2.fromOffset(size, size)
-    p.BackgroundColor3 = Color3.fromRGB(170, 110, 255)
-    p.BackgroundTransparency = math.random(35, 75) / 100
+    local size = math.random(3, 7)
+    p.Size = UDim2.new(0, size, 0, size)
+    p.Position = UDim2.new(math.random(), 0, math.random(), 0)
+    p.BackgroundColor3 = (math.random() > 0.5)
+        and Color3.fromRGB(170, 80, 255)
+        or  Color3.fromRGB(120, 40, 220)
+    p.BackgroundTransparency = math.random(30, 60) / 100
     p.BorderSizePixel = 0
-    p.ZIndex = 2
-    p.Position = UDim2.new(math.random(), 0, fromBottom and 1.02 or math.random(), 0)
+    p.Parent = bg
     local c = Instance.new("UICorner")
     c.CornerRadius = UDim.new(1, 0)
     c.Parent = p
-    p.Parent = particleLayer
-    return { obj = p, vy = math.random(30, 100) / 1000, vx = math.random(-25, 25) / 1000, tw = math.random(0, 100) / 100 }
+    table.insert(particles, {obj = p, speed = math.random(15, 45) / 100, drift = (math.random() - 0.5) * 0.03})
 end
-for _ = 1, 45 do table.insert(particles, newParticle(false)) end
 
-RunService.RenderStepped:Connect(function(dt)
-    if not particleLayer.Parent then return end
-    if math.random() < 0.35 and #particles < 70 then
-        table.insert(particles, newParticle(true))
-    end
-    for i = #particles, 1, -1 do
-        local it = particles[i]
-        local o = it.obj
-        if not o or not o.Parent then
-            table.remove(particles, i)
-        else
-            local pos = o.Position
-            local ny = pos.Y.Scale - it.vy * dt
-            local nx = pos.X.Scale + it.vx * dt
-            if ny < -0.05 then
-                o:Destroy()
-                table.remove(particles, i)
-            else
-                o.Position = UDim2.new(nx, 0, ny, 0)
-                it.tw = it.tw + dt * 2
-                o.BackgroundTransparency = 0.45 + math.sin(it.tw) * 0.25
-            end
-        end
-    end
-end)
+-- 背景呼吸光晕
+local glowBg = Instance.new("Frame")
+glowBg.AnchorPoint = Vector2.new(0.5, 0.5)
+glowBg.Position = UDim2.new(0.5, 0, 0.5, 0)
+glowBg.Size = UDim2.new(0, 700, 0, 500)
+glowBg.BackgroundColor3 = Color3.fromRGB(120, 40, 220)
+glowBg.BackgroundTransparency = 0.9
+glowBg.BorderSizePixel = 0
+glowBg.Parent = bg
+local gc = Instance.new("UICorner"); gc.CornerRadius = UDim.new(1, 0); gc.Parent = glowBg
 
--- 主面板
+--// 主窗口（紫色外框 + 流动渐变）
 local main = Instance.new("Frame")
+main.Name = "Main"
 main.AnchorPoint = Vector2.new(0.5, 0.5)
-main.Position = UDim2.fromScale(0.5, 0.5)
-main.Size = UDim2.fromOffset(500, 296)
+main.Position = UDim2.new(0.5, 0, 0.5, 0)
+main.Size = UDim2.new(0, 400, 0, 240)
 main.BackgroundColor3 = Color3.fromRGB(18, 10, 32)
 main.BorderSizePixel = 0
-main.ZIndex = 10
+main.ClipsDescendants = true
 main.Parent = gui
 
-local mainCorner = Instance.new("UICorner"); mainCorner.CornerRadius = UDim.new(0, 18); mainCorner.Parent = main
-local mainGrad = Instance.new("UIGradient")
-mainGrad.Rotation = 90
-mainGrad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(38, 20, 62)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(14, 7, 26)),
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 14)
+mainCorner.Parent = main
+
+-- 外框发光描边（用描边 + 渐变做"紫色外框"）
+local stroke = Instance.new("UIStroke")
+stroke.Thickness = 3
+stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+stroke.Parent = main
+local strokeGrad = Instance.new("UIGradient")
+strokeGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,    Color3.fromRGB(180, 80, 255)),
+    ColorSequenceKeypoint.new(0.5,  Color3.fromRGB(120, 30, 220)),
+    ColorSequenceKeypoint.new(1,    Color3.fromRGB(200, 120, 255)),
 })
-mainGrad.Parent = main
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Color3.fromRGB(150, 80, 255)
-mainStroke.Thickness = 2
-mainStroke.Transparency = 0.15
-mainStroke.Parent = main
+strokeGrad.Parent = stroke
 
-TweenService:Create(main, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-    Size = UDim2.fromOffset(540, 320)
-}):Play()
+-- 边框流动动画
+task.spawn(function()
+    while main.Parent do
+        local tw = TweenService:Create(strokeGrad, TweenInfo.new(2.5, Enum.EasingStyle.Linear), {Rotation = 360})
+        tw:Play()
+        tw.Completed:Wait()
+        strokeGrad.Rotation = 0
+    end
+end)
 
--- 标题
+-- 内部微光
+local innerGlow = Instance.new("UIGradient")
+innerGlow.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,   Color3.fromRGB(18, 10, 32)),
+    ColorSequenceKeypoint.new(0.6, Color3.fromRGB(30, 15, 55)),
+    ColorSequenceKeypoint.new(1,   Color3.fromRGB(18, 10, 32)),
+})
+innerGlow.Parent = main
+
+--// 标题
 local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -60, 0, 40)
+title.Position = UDim2.new(0, 20, 0, 8)
 title.BackgroundTransparency = 1
-title.Position = UDim2.new(0, 0, 0, 18)
-title.Size = UDim2.new(1, 0, 0, 28)
+title.Text = "🔑 卡 密 验 证"
 title.Font = Enum.Font.GothamBold
-title.Text = "卡密验证系统"
-title.TextColor3 = Color3.fromRGB(222, 192, 255)
-title.TextSize = 22
-title.ZIndex = 11
+title.TextSize = 20
+title.TextColor3 = Color3.fromRGB(210, 160, 255)
+title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = main
-local titleGrad = Instance.new("UIGradient")
-titleGrad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(190, 140, 255)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(240, 200, 255)),
-})
-titleGrad.Parent = title
 
--- 分割线
-local divider = Instance.new("Frame")
-divider.Position = UDim2.new(0, 24, 0, 58)
-divider.Size = UDim2.new(1, -48, 0, 1)
-divider.BackgroundColor3 = Color3.fromRGB(120, 60, 200)
-divider.BackgroundTransparency = 0.55
-divider.BorderSizePixel = 0
-divider.ZIndex = 11
-divider.Parent = main
-
--- 关闭按钮
+--// 关闭按钮（右上角 X）
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.fromOffset(30, 30)
-closeBtn.Position = UDim2.new(1, -42, 0, 14)
-closeBtn.BackgroundColor3 = Color3.fromRGB(58, 28, 100)
+closeBtn.Size = UDim2.new(0, 34, 0, 34)
+closeBtn.Position = UDim2.new(1, -44, 0, 10)
+closeBtn.BackgroundColor3 = Color3.fromRGB(90, 30, 140)
 closeBtn.Text = "✕"
-closeBtn.TextColor3 = Color3.fromRGB(230, 210, 255)
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 15
-closeBtn.AutoButtonColor = false
-closeBtn.ZIndex = 12
+closeBtn.TextSize = 16
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.BorderSizePixel = 0
+closeBtn.AutoButtonColor = true
 closeBtn.Parent = main
-local closeCorner = Instance.new("UICorner"); closeCorner.CornerRadius = UDim.new(0, 8); closeCorner.Parent = closeBtn
+local cc = Instance.new("UICorner"); cc.CornerRadius = UDim.new(0, 8); cc.Parent = closeBtn
 
-closeBtn.MouseEnter:Connect(function()
-    TweenService:Create(closeBtn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(200, 60, 90) }):Play()
-end)
-closeBtn.MouseLeave:Connect(function()
-    TweenService:Create(closeBtn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(58, 28, 100) }):Play()
+closeBtn.MouseButton1Click:Connect(function()
+    local tw = TweenService:Create(main, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
+        Size = UDim2.new(0, 0, 0, 0), Position = UDim2.new(0.5, 0, 0.5, 0)
+    })
+    tw:Play()
+    tw.Completed:Wait()
+    gui:Destroy()
 end)
 
--- 提示
+--// 输入框（中间，放卡密）
+local inputBox = Instance.new("TextBox")
+inputBox.Size = UDim2.new(1, -60, 0, 46)
+inputBox.Position = UDim2.new(0, 30, 0, 70)
+inputBox.BackgroundColor3 = Color3.fromRGB(28, 16, 48)
+inputBox.PlaceholderText = "在此输入卡密（XXXX-XXXX-...）"
+inputBox.PlaceholderColor3 = Color3.fromRGB(110, 80, 150)
+inputBox.Text = ""
+inputBox.Font = Enum.Font.Code
+inputBox.TextSize = 15
+inputBox.TextColor3 = Color3.fromRGB(230, 210, 255)
+inputBox.ClearTextOnFocus = false
+inputBox.BorderSizePixel = 0
+inputBox.Parent = main
+local ic = Instance.new("UICorner"); ic.CornerRadius = UDim.new(0, 10); ic.Parent = inputBox
+local istroke = Instance.new("UIStroke")
+istroke.Thickness = 1.5
+istroke.Color = Color3.fromRGB(140, 60, 220)
+istroke.Parent = inputBox
+local igrad = Instance.new("UIGradient")
+igrad.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0),
+    NumberSequenceKeypoint.new(0.05, 0),
+    NumberSequenceKeypoint.new(0.95, 0),
+    NumberSequenceKeypoint.new(1, 0.4),
+})
+igrad.Parent = inputBox
+
+inputBox.Focused:Connect(function()
+    TweenService:Create(istroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(200, 120, 255)}):Play()
+end)
+inputBox.FocusLost:Connect(function()
+    TweenService:Create(istroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(140, 60, 220)}):Play()
+end)
+
+--// 提示文本
 local hint = Instance.new("TextLabel")
+hint.Size = UDim2.new(1, -60, 0, 18)
+hint.Position = UDim2.new(0, 30, 0, 122)
 hint.BackgroundTransparency = 1
-hint.Position = UDim2.new(0, 24, 0, 78)
-hint.Size = UDim2.new(1, -48, 0, 22)
+hint.Text = "输入任意内容即可执行 · 关闭本窗口不会停止已加载的脚本"
 hint.Font = Enum.Font.Gotham
-hint.Text = "请输入您的卡密以继续使用脚本"
-hint.TextColor3 = Color3.fromRGB(180, 155, 220)
-hint.TextSize = 15
-hint.ZIndex = 11
+hint.TextSize = 12
+hint.TextColor3 = Color3.fromRGB(140, 110, 180)
+hint.TextXAlignment = Enum.TextXAlignment.Left
 hint.Parent = main
 
--- 输入框
-local box = Instance.new("TextBox")
-box.Position = UDim2.new(0, 24, 0, 116)
-box.Size = UDim2.new(1, -48, 0, 48)
-box.BackgroundColor3 = Color3.fromRGB(28, 16, 48)
-box.BorderSizePixel = 0
-box.Font = Enum.Font.Gotham
-box.TextSize = 15
-box.Text = ""
-box.TextColor3 = Color3.fromRGB(235, 220, 255)
-box.PlaceholderText = "在此粘贴您的卡密..."
-box.PlaceholderColor3 = Color3.fromRGB(125, 105, 165)
-box.ClearTextOnFocus = false
-box.TextXAlignment = Enum.TextXAlignment.Left
-box.ZIndex = 11
-box.Parent = main
-local boxCorner = Instance.new("UICorner"); boxCorner.CornerRadius = UDim.new(0, 10); boxCorner.Parent = box
-local boxPad = Instance.new("UIPadding"); boxPad.PaddingLeft = UDim.new(0, 14); boxPad.PaddingRight = UDim.new(0, 14); boxPad.Parent = box
-local boxStroke = Instance.new("UIStroke")
-boxStroke.Color = Color3.fromRGB(110, 60, 190)
-boxStroke.Thickness = 1.5
-boxStroke.Transparency = 0.25
-boxStroke.Parent = box
+--// 通用按钮工厂
+local function makeButton(text, pos, size)
+    local b = Instance.new("TextButton")
+    b.Size = size
+    b.Position = pos
+    b.BackgroundColor3 = Color3.fromRGB(110, 40, 190)
+    b.Text = text
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 15
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.BorderSizePixel = 0
+    b.AutoButtonColor = true
+    b.Parent = main
+    local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 10); bc.Parent = b
+    local bs = Instance.new("UIStroke"); bs.Thickness = 1.5; bs.Color = Color3.fromRGB(190, 110, 255); bs.Parent = b
+    return b
+end
 
-box.Focused:Connect(function()
-    TweenService:Create(boxStroke, TweenInfo.new(0.2), { Color = Color3.fromRGB(180, 110, 255), Transparency = 0 }):Play()
-end)
-box.FocusLost:Connect(function()
-    TweenService:Create(boxStroke, TweenInfo.new(0.2), { Color = Color3.fromRGB(110, 60, 190), Transparency = 0.25 }):Play()
-end)
+--// 左下角：购买卡密（点击复制链接）
+local buyBtn = makeButton("🛒 购买卡密", UDim2.new(0, 30, 1, -70), UDim2.new(0, 160, 0, 44))
 
--- 格式提示
-local fmtTip = Instance.new("TextLabel")
-fmtTip.BackgroundTransparency = 1
-fmtTip.Position = UDim2.new(0, 24, 0, 170)
-fmtTip.Size = UDim2.new(1, -48, 0, 20)
-fmtTip.Font = Enum.Font.Gotham
-fmtTip.Text = "卡密格式:  XXXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
-fmtTip.TextColor3 = Color3.fromRGB(140, 115, 185)
-fmtTip.TextSize = 13
-fmtTip.TextXAlignment = Enum.TextXAlignment.Left
-fmtTip.ZIndex = 11
-fmtTip.Parent = main
-
--- 购买按钮
-local buyBtn = Instance.new("TextButton")
-buyBtn.Position = UDim2.new(0, 24, 0, 212)
-buyBtn.Size = UDim2.fromOffset(200, 46)
-buyBtn.BackgroundColor3 = Color3.fromRGB(56, 32, 94)
-buyBtn.Text = "购买卡密"
-buyBtn.TextColor3 = Color3.fromRGB(225, 205, 255)
-buyBtn.Font = Enum.Font.GothamBold
-buyBtn.TextSize = 16
-buyBtn.AutoButtonColor = false
-buyBtn.ZIndex = 11
-buyBtn.Parent = main
-local buyCorner = Instance.new("UICorner"); buyCorner.CornerRadius = UDim.new(0, 10); buyCorner.Parent = buyBtn
-local buyStroke = Instance.new("UIStroke"); buyStroke.Color = Color3.fromRGB(130, 75, 220); buyStroke.Thickness = 1.5; buyStroke.Transparency = 0.3; buyStroke.Parent = buyBtn
-
--- 执行按钮
-local execBtn = Instance.new("TextButton")
-execBtn.Position = UDim2.new(0, 316, 0, 212)
-execBtn.Size = UDim2.fromOffset(200, 46)
-execBtn.BackgroundColor3 = Color3.fromRGB(112, 56, 222)
-execBtn.Text = "执 行"
-execBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-execBtn.Font = Enum.Font.GothamBold
-execBtn.TextSize = 16
-execBtn.AutoButtonColor = false
-execBtn.ZIndex = 11
-execBtn.Parent = main
-local execCorner = Instance.new("UICorner"); execCorner.CornerRadius = UDim.new(0, 10); execCorner.Parent = execBtn
-local execGrad = Instance.new("UIGradient")
-execGrad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 60, 235)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(175, 95, 255)),
+--// 右下角：执行按钮
+local execBtn = makeButton("⚡ 执 行", UDim2.new(1, -190, 1, -70), UDim2.new(0, 160, 0, 44))
+-- 执行按钮用渐变紫高亮
+local egrad = Instance.new("UIGradient")
+egrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(150, 60, 250)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(90, 25, 180)),
 })
-execGrad.Parent = execBtn
-local execStroke = Instance.new("UIStroke"); execStroke.Color = Color3.fromRGB(200, 150, 255); execStroke.Thickness = 1.5; execStroke.Transparency = 0.25; execStroke.Parent = execBtn
+egrad.Parent = execBtn
 
--- 状态栏
+--// 状态提示
 local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -60, 0, 20)
+status.Position = UDim2.new(0, 30, 1, -95)
 status.BackgroundTransparency = 1
-status.Position = UDim2.new(0, 24, 0, 268)
-status.Size = UDim2.new(1, -48, 0, 22)
-status.Font = Enum.Font.Gotham
 status.Text = ""
-status.TextColor3 = Color3.fromRGB(170, 140, 220)
-status.TextSize = 14
-status.TextWrapped = true
-status.TextXAlignment = Enum.TextXAlignment.Left
-status.ZIndex = 11
+status.Font = Enum.Font.Gotham
+status.TextSize = 13
+status.TextColor3 = Color3.fromRGB(255, 210, 120)
+status.TextXAlignment = Enum.TextXAlignment.Center
 status.Parent = main
 
--- ================= 交互逻辑 =================
-local function destroyUI()
-    if gui and gui.Parent then gui:Destroy() end
-end
-
-local function bindHover(btn, normal, hover)
-    btn.MouseEnter:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.15), { BackgroundColor3 = hover }):Play()
-    end)
-    btn.MouseLeave:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.15), { BackgroundColor3 = normal }):Play()
-    end)
-end
-bindHover(buyBtn, Color3.fromRGB(56, 32, 94), Color3.fromRGB(78, 46, 130))
-
-execBtn.MouseEnter:Connect(function()
-    TweenService:Create(execGrad, TweenInfo.new(0.15), {
-        Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(140, 75, 255)),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(200, 120, 255)),
-        })
-    }):Play()
-end)
-execBtn.MouseLeave:Connect(function()
-    TweenService:Create(execGrad, TweenInfo.new(0.15), {
-        Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 60, 235)),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(175, 95, 255)),
-        })
-    }):Play()
-end)
-
-closeBtn.MouseButton1Click:Connect(function() destroyUI() end)
-
--- 购买卡密
+--// 购买卡密：复制链接
 buyBtn.MouseButton1Click:Connect(function()
-    if type(g_setclip) == "function" then
-        local ok = pcall(g_setclip, BUY_URL)
-        if ok then
-            status.Text = "✅ 购买链接已复制到剪贴板"
-            status.TextColor3 = Color3.fromRGB(120, 255, 175)
-            return
+    local ok = pcall(function()
+        if setclipboard then
+            setclipboard(PURCHASE_LINK)
         end
-    end
-    status.Text = "请手动访问: " .. BUY_URL
-    status.TextColor3 = Color3.fromRGB(255, 185, 95)
+    end)
+    local oldText = buyBtn.Text
+    buyBtn.Text = ok and "✅ 已复制链接！" or PURCHASE_LINK
+    task.wait(1.5)
+    if buyBtn.Parent then buyBtn.Text = oldText end
 end)
 
--- 提交执行
-local function submit()
-    local text = box.Text
-    if text == nil or text == "" then
-        status.Text = "⚠ 请先输入卡密"
-        status.TextColor3 = Color3.fromRGB(255, 130, 130)
-
-        local origPos = box.Position
-        for i = 1, 4 do
-            TweenService:Create(box, TweenInfo.new(0.04), {
-                Position = origPos + UDim2.fromOffset((i % 2 == 0) and 7 or -7, 0)
-            }):Play()
-            task.wait(0.04)
-        end
-        TweenService:Create(box, TweenInfo.new(0.06), { Position = origPos }):Play()
+--// 执行：写入卡密 -> 跑目标脚本
+local executed = false
+execBtn.MouseButton1Click:Connect(function()
+    if executed then
+        status.Text = "⚠️ 已执行过，请勿重复点击"
         return
     end
+    local key = inputBox.Text
+    if key == "" then
+        status.TextColor3 = Color3.fromRGB(255, 120, 120)
+        status.Text = "❌ 请输入卡密再执行！"
+        local shake = TweenService:Create(inputBox, TweenInfo.new(0.08, Enum.EasingStyle.Linear), {Position = inputBox.Position + UDim2.new(0, -6, 0, 0)})
+        shake:Play(); shake.Completed:Wait()
+        TweenService:Create(inputBox, TweenInfo.new(0.08), {Position = inputBox.Position}):Play()
+        return
+    end
+    executed = true
+    getgenv().SCRIPT_KEY = key
+    status.TextColor3 = Color3.fromRGB(140, 255, 160)
+    status.Text = "✅ 卡密已注入，正在执行脚本…"
 
-    -- 写入卡密到执行器环境
-    getgenv().SCRIPT_KEY = text
-
-    status.Text = "🔓 正在加载脚本，请稍候..."
-    status.TextColor3 = Color3.fromRGB(205, 170, 255)
-    box.TextEditable = false
-    execBtn.Text = "加载中..."
-
-    task.wait(0.35)
-    destroyUI()
-    runScript()
-end
-
-execBtn.MouseButton1Click:Connect(submit)
-box.FocusLost:Connect(function(enter)
-    if enter then submit() end
+    task.spawn(function()
+        local ok, err = pcall(function()
+            loadstring(game:HttpGet(TARGET_URL))()
+        end)
+        if not ok then
+            executed = false
+            status.TextColor3 = Color3.fromRGB(255, 120, 120)
+            status.Text = "❌ 执行出错：" .. tostring(err)
+        end
+    end)
 end)
+
+--// 粒子漂浮动画
+task.spawn(function()
+    while bg.Parent do
+        task.wait(0.05)
+        for _, p in ipairs(particles) do
+            if not p.obj.Parent then continue end
+            local pos = p.obj.Position
+            local newY = pos.Y.Scale - p.speed * 0.05
+            local newX = pos.X.Scale + p.drift * 0.05
+            if newY < -0.05 then
+                newY = 1.05
+                newX = math.random()
+            end
+            p.obj.Position = UDim2.new(newX, 0, newY, 0)
+        end
+        -- 光晕呼吸
+        local t = tick() % 3 / 3
+        glowBg.BackgroundTransparency = 0.85 + math.sin(t * math.pi * 2) * 0.08
+    end
+end)
+
+--// 打开动画
+main.Size = UDim2.new(0, 0, 0, 0)
+TweenService:Create(main, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+    Size = UDim2.new(0, 400, 0, 240)
+}):Play()
+
 
 
     end
